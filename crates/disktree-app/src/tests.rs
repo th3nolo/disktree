@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use disktree_core::removal::RemovalMode;
+use disktree_core::removal::{RemovalMode, entry_identity};
 use disktree_core::scan::{ScanOptions, scan};
 use disktree_core::space::{SpaceInfo, Volume};
 use disktree_core::treemap::Tile;
@@ -99,19 +99,24 @@ fn review_stays_bound_to_the_root_that_was_displayed(cx: &mut TestAppContext) {
     let root = temp.path().join("keep");
     let (view, cx) = view_over(&root, cx);
     update(&view, cx, |app, cx| {
-        let crumbs = app.crumbs_for_path(&root.join("notes.txt")).expect("node");
+        let crumbs =
+            app.crumbs_for_path(&root.join("notes.txt")).expect("node");
         app.toggle_mark(&crumbs, cx);
         assert_eq!(app.marks.len(), 1);
     });
     std::fs::rename(&root, temp.path().join("original")).expect("move");
     std::fs::create_dir(&root).expect("mkdir");
-    std::fs::write(root.join("notes.txt"), b"replacement").expect("write");
+    std::fs::hard_link(
+        temp.path().join("original/notes.txt"),
+        root.join("notes.txt"),
+    )
+    .expect("same file in the replacement root");
     draw(cx);
 
     let plan = read(&view, cx, Disktree::plan);
     assert!(plan.is_empty());
     assert_eq!(plan.blocked.len(), 1);
-    assert_eq!(std::fs::read(root.join("notes.txt")).expect("read"), b"replacement");
+    assert!(root.join("notes.txt").exists());
     assert!(temp.path().join("original/notes.txt").exists());
     assert!(temp.path().join("junk/blob.bin").exists());
 }
@@ -758,7 +763,7 @@ fn the_review_screen_switches_removal_mode(cx: &mut TestAppContext) {
             bytes: 300_000,
             is_dir: true,
             hidden: false,
-            identity: None,
+            identity: entry_identity(&temp.path().join("junk")),
         });
         app.screen = Screen::Review;
         cx.notify();
@@ -792,7 +797,7 @@ fn the_review_screen_copies_the_list_as_an_agent_prompt(
             bytes: 300_000,
             is_dir: true,
             hidden: false,
-            identity: None,
+            identity: entry_identity(&junk),
         });
         app.screen = Screen::Review;
         cx.notify();
@@ -831,7 +836,7 @@ fn escape_in_the_delete_dialog_cancels(cx: &mut TestAppContext) {
             bytes: 300_000,
             is_dir: true,
             hidden: false,
-            identity: None,
+            identity: entry_identity(&temp.path().join("junk")),
         });
         app.screen = Screen::Review;
         cx.notify();

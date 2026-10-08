@@ -1598,7 +1598,8 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(unix, windows))]
+    // APFS refuses invalid UTF-8 at creation; these filesystems accept it.
+    #[cfg(any(target_os = "linux", windows))]
     fn colliding_lossy_names_are_measured_but_never_addressed() {
         let temp = TempDir::new().expect("tempdir");
         let root = temp.path().canonicalize().expect("canonical");

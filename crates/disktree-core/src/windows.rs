@@ -526,8 +526,10 @@ pub(crate) fn pin_parent(
 }
 
 fn pin_directory(path: &Path) -> io::Result<File> {
+    // Attribute-only handles do not participate in Windows share checks.
+    // Listing access makes the no-delete/no-write sharing contract effective.
     let file = OpenOptions::new()
-        .access_mode(FILE_READ_ATTRIBUTES)
+        .access_mode(FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY)
         .share_mode(FILE_SHARE_READ)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)?;

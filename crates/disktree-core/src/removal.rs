@@ -1195,7 +1195,13 @@ fn run(
                     "the scanned root changed or cannot be verified".into()
                 })
             })
-            .or_else(|| changed_entry(target));
+            .or_else(|| changed_entry(target))
+            .or_else(|| {
+                target.identity.is_none().then(|| {
+                    "the marked entry cannot be verified; rescan and mark again"
+                        .into()
+                })
+            });
         let outcome = if let Some(reason) = reason {
             Err(io::Error::other(reason))
         } else {
@@ -2429,7 +2435,11 @@ mod tests {
         let marked = target(&root.join("file.bin"), 8);
         fs::rename(&root, temp.path().join("original")).expect("move");
         fs::create_dir(&root).expect("mkdir");
-        fs::write(root.join("file.bin"), b"replacement").expect("write");
+        fs::hard_link(
+            temp.path().join("original/file.bin"),
+            root.join("file.bin"),
+        )
+        .expect("same file, different root");
 
         let plan = plan_from_scan(&[marked], &root, Some(&saved));
         assert!(plan.is_empty());
@@ -2446,7 +2456,11 @@ mod tests {
             fs::create_dir(&root).expect("mkdir");
             fs::create_dir(&keep).expect("mkdir");
             fs::write(root.join("precious.bin"), b"original").expect("write");
-            fs::write(keep.join("precious.bin"), b"keep").expect("write");
+            fs::hard_link(
+                root.join("precious.bin"),
+                keep.join("precious.bin"),
+            )
+            .expect("same file in both roots");
             let plan = plan(&[target(&root.join("precious.bin"), 8)], &root);
             assert_eq!(plan.targets.len(), 1);
             fs::rename(&root, temp.path().join("original")).expect("move");
@@ -2454,10 +2468,11 @@ mod tests {
 
             let outcomes = run_outcomes(&plan, mode);
             assert_eq!(outcomes.len(), 1);
-            assert!(outcomes[0].is_err(), "{outcomes:?}");
+            let error = outcomes[0].as_ref().expect_err("root refused");
+            assert!(error.contains("scanned root") || error.contains("through a link"));
             assert_eq!(
                 fs::read(keep.join("precious.bin")).expect("read"),
-                b"keep"
+                b"original"
             );
             assert!(temp.path().join("original/precious.bin").exists());
         }
@@ -2478,6 +2493,50 @@ mod tests {
         assert_eq!(outcomes.len(), 1);
         assert!(outcomes[0].is_err());
         assert_eq!(fs::read(&path).expect("read"), b"replacement");
+        assert!(temp.path().join("a/c.bin").exists());
+    }
+
+    #[test]
+    fn the_worker_never_removes_a_mark_without_a_verifiable_identity() {
+        let temp = tree();
+        let path = temp.path().join("a/one.bin");
+        let mut marked = target(&path, 10);
+        marked.identity = None;
+        let planned = plan(&[marked], temp.path());
+        let outcomes = run_outcomes(&planned, RemovalMode::Permanent);
+
+        assert_eq!(outcomes.len(), 1);
+        let error = outcomes[0].as_ref().expect_err("no identity");
+        assert!(error.contains("cannot be verified"), "{error}");
+        assert!(path.exists());
+        assert!(temp.path().join("a/c.bin").exists());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn the_recycle_bin_accepts_a_path_with_pinned_ancestors() {
+        let temp = tree();
+        let path = temp.path().join("a/one.bin");
+        let planned = plan(&[target(&path, 10)], temp.path());
+        let (sender, receiver) = mpsc::channel();
+        run(
+            &planned,
+            RemovalMode::Trash,
+            TrashBackend::RecycleBin,
+            &AtomicBool::new(false),
+            &sender,
+        );
+        drop(sender);
+        let outcomes: Vec<_> = receiver.into_iter().filter_map(|event| {
+            if let RemovalEvent::Item { outcome, .. } = event {
+                Some(outcome)
+            } else {
+                None
+            }
+        }).collect();
+
+        assert_eq!(outcomes, [Ok(())]);
+        assert!(!path.exists());
         assert!(temp.path().join("a/c.bin").exists());
     }
 
