@@ -476,12 +476,12 @@ pub fn entry_identity(path: &Path) -> Option<crate::removal::EntryIdentity> {
 /// rename or conversion to a reparse point must fail while removal uses
 /// the canonical path, including when the scanned root was named by an alias.
 #[derive(Debug)]
-pub(crate) struct RemovalGuard {
+pub struct RemovalGuard {
     pub path: PathBuf,
     _parents: Vec<File>,
 }
 
-pub(crate) fn pin_parent(
+pub fn pin_parent(
     path: &Path,
     root: &Path,
     expected: Option<crate::removal::EntryIdentity>,
@@ -543,7 +543,7 @@ fn pin_directory(path: &Path) -> io::Result<File> {
 }
 
 /// Query the full id, rather than the legacy 64-bit index whose high half
-/// can alias another entry on ReFS. Unsupported filesystems fail closed.
+/// can alias another entry on `ReFS`. Unsupported filesystems fail closed.
 fn handle_identity(file: &File) -> io::Result<crate::removal::EntryIdentity> {
     use windows_sys::Win32::Storage::FileSystem::{FILE_ID_INFO, FileIdInfo};
     // SAFETY: FILE_ID_INFO contains only integers and a byte array, for
@@ -575,7 +575,7 @@ fn handle_identity(file: &File) -> io::Result<crate::removal::EntryIdentity> {
 /// parent guard must stay alive until this finishes. All recursive entries
 /// are opened without following reparse points and without sharing writes
 /// or deletion, so each directory stays put while its children are listed.
-pub(crate) fn remove_guarded(
+pub fn remove_guarded(
     path: &Path,
     expected: Option<crate::removal::EntryIdentity>,
 ) -> io::Result<()> {

@@ -36,7 +36,7 @@ pub struct Target {
     pub identity: Option<EntryIdentity>,
 }
 
-/// A full file id and its volume: Windows ReFS needs all 128 id bits.
+/// A full file id and its volume: Windows `ReFS` needs all 128 id bits.
 pub type EntryIdentity = (u64, u128);
 
 /// The directory the user actually scanned, including aliases above it.

@@ -28,6 +28,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.97"
+          components: clippy
       # Fast feedback on filesystem guards while the full UI gate builds.
+      - name: Core lint
+        run: >-
+          cargo clippy --locked -p disktree-core --all-targets
+          --all-features -- -D warnings
       - name: Core tests
         run: cargo test --locked -p disktree-core
