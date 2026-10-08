@@ -1253,8 +1253,9 @@ fn perform_removal(
     mode: RemovalMode,
     backend: TrashBackend,
 ) -> io::Result<()> {
-    let saved = plan.root_snapshot.as_ref()
-        .ok_or_else(|| io::Error::other("the scanned root cannot be verified"))?;
+    let saved = plan.root_snapshot.as_ref().ok_or_else(|| {
+        io::Error::other("the scanned root cannot be verified")
+    })?;
     let guard = crate::windows::pin_parent(
         &target.path,
         &plan.root,
@@ -1416,8 +1417,9 @@ fn open_step<P: rustix::path::Arg>(
 /// handle. A substituted junction never becomes a recursive root.
 #[cfg(windows)]
 pub fn remove_permanently(path: &Path, root: &Path) -> io::Result<()> {
-    let saved = RootSnapshot::capture(root)
-        .ok_or_else(|| io::Error::other("the scanned root cannot be verified"))?;
+    let saved = RootSnapshot::capture(root).ok_or_else(|| {
+        io::Error::other("the scanned root cannot be verified")
+    })?;
     let guard = crate::windows::pin_parent(path, root, Some(saved.identity))?;
     if !saved.matches(root) {
         return Err(io::Error::other("the scanned root changed"));

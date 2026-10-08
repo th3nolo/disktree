@@ -93,6 +93,30 @@ fn read<R>(
 }
 
 #[gpui_kit::test]
+fn review_stays_bound_to_the_root_that_was_displayed(cx: &mut TestAppContext) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let root = temp.path().join("keep");
+    let (view, cx) = view_over(&root, cx);
+    update(&view, cx, |app, cx| {
+        let crumbs = app.crumbs_for_path(&root.join("notes.txt")).expect("node");
+        app.toggle_mark(&crumbs, cx);
+        assert_eq!(app.marks.len(), 1);
+    });
+    std::fs::rename(&root, temp.path().join("original")).expect("move");
+    std::fs::create_dir(&root).expect("mkdir");
+    std::fs::write(root.join("notes.txt"), b"replacement").expect("write");
+    draw(cx);
+
+    let plan = read(&view, cx, Disktree::plan);
+    assert!(plan.is_empty());
+    assert_eq!(plan.blocked.len(), 1);
+    assert_eq!(std::fs::read(root.join("notes.txt")).expect("read"), b"replacement");
+    assert!(temp.path().join("original/notes.txt").exists());
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+#[gpui_kit::test]
 fn the_window_draws_a_treemap_with_tiles(cx: &mut TestAppContext) {
     cx.update(gpui_omarchy::init);
     let temp = fixture();

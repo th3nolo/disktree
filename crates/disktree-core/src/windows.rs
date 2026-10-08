@@ -486,15 +486,20 @@ pub(crate) fn pin_parent(
     root: &Path,
     expected: Option<crate::removal::EntryIdentity>,
 ) -> io::Result<RemovalGuard> {
-    let invalid = || io::Error::other("not a normalized path inside the scanned root");
+    let invalid =
+        || io::Error::other("not a normalized path inside the scanned root");
     if !path.is_absolute() || !root.is_absolute() {
         return Err(invalid());
     }
     let name = path.file_name().ok_or_else(invalid)?;
-    let below = path.parent()
+    let below = path
+        .parent()
         .and_then(|parent| parent.strip_prefix(root).ok())
         .ok_or_else(invalid)?;
-    if below.components().any(|part| !matches!(part, Component::Normal(_))) {
+    if below
+        .components()
+        .any(|part| !matches!(part, Component::Normal(_)))
+    {
         return Err(invalid());
     }
     let canonical = fs::canonicalize(root)?;
@@ -528,7 +533,9 @@ fn pin_directory(path: &Path) -> io::Result<File> {
         .open(path)?;
     let meta = file.metadata()?;
     if !meta.is_dir() || meta.file_type().is_symlink() {
-        return Err(io::Error::other("changed since the scan: no longer a directory"));
+        return Err(io::Error::other(
+            "changed since the scan: no longer a directory",
+        ));
     }
     Ok(file)
 }
@@ -555,7 +562,9 @@ fn handle_identity(file: &File) -> io::Result<crate::removal::EntryIdentity> {
     }
     let id = u128::from_le_bytes(info.FileId.Identifier);
     if id == 0 || id == u128::MAX {
-        return Err(io::Error::other("the filesystem cannot verify this entry"));
+        return Err(io::Error::other(
+            "the filesystem cannot verify this entry",
+        ));
     }
     Ok((info.VolumeSerialNumber, id))
 }
@@ -593,7 +602,9 @@ fn remove_opened(path: &Path, file: &File, volume: u64) -> io::Result<()> {
         FileDispositionInfoEx, SetFileInformationByHandle,
     };
     let meta = file.metadata()?;
-    if meta.is_dir() && meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+    if meta.is_dir()
+        && meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
+    {
         if handle_identity(file)?.0 != volume {
             return Err(io::Error::other("a different volume was not removed"));
         }
@@ -1192,7 +1203,10 @@ mod tests {
 
         assert!(fs::rename(&root, temp.path().join("moved")).is_err());
         assert!(fs::rename(root.join("parent"), root.join("other")).is_err());
-        assert!(pin_parent(&temp.path().join("outside"), &root, Some(expected)).is_err());
+        assert!(
+            pin_parent(&temp.path().join("outside"), &root, Some(expected))
+                .is_err()
+        );
         drop(guard);
         fs::rename(&root, temp.path().join("moved")).expect("unlocked");
         assert!(temp.path().join("moved/parent/file.bin").exists());
