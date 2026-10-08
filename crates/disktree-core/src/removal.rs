@@ -167,7 +167,11 @@ pub fn plan_from_scan(
 ) -> Plan {
     let mut result = plan(targets, root);
     if snapshot.is_none() || result.root_snapshot.as_ref() != snapshot {
-        for target in result.targets.drain(..).chain(result.covered.drain(..)) {
+        for target in result
+            .targets
+            .drain(..)
+            .chain(result.covered.drain(..))
+        {
             result.blocked.push(Blocked {
                 path: target.path,
                 reason: "the scanned root changed or cannot be verified; \
@@ -208,7 +212,12 @@ fn plan_against(targets: &[Target], root: &Path, mounts: &MountTable) -> Plan {
         let reason =
             refuse(&path, &root, home.as_ref(), &mounts.points, &mounts.media)
                 .or_else(|| {
-                    linked(&path, &root, real_root.map(PathBuf::as_path), home.as_ref())
+                    linked(
+                        &path,
+                        &root,
+                        real_root.map(PathBuf::as_path),
+                        home.as_ref(),
+                    )
                 })
                 .or_else(|| changed_entry(target));
         if let Some(reason) = reason {
@@ -1178,7 +1187,9 @@ fn run(
                 (!plan.root_snapshot.as_ref().is_some_and(|saved| {
                     saved.matches(&plan.root)
                 }))
-                .then(|| "the scanned root changed or cannot be verified".into())
+                .then(|| {
+                    "the scanned root changed or cannot be verified".into()
+                })
             })
             .or_else(|| changed_entry(target));
         let outcome = if let Some(reason) = reason {
@@ -2392,7 +2403,10 @@ mod tests {
             let outcomes = run_outcomes(&plan, mode);
             assert_eq!(outcomes.len(), 1);
             assert!(outcomes[0].is_err(), "{outcomes:?}");
-            assert_eq!(fs::read(keep.join("precious.bin")).expect("read"), b"keep");
+            assert_eq!(
+                fs::read(keep.join("precious.bin")).expect("read"),
+                b"keep"
+            );
             assert!(temp.path().join("original/precious.bin").exists());
         }
     }

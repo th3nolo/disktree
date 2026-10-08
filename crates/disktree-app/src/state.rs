@@ -994,7 +994,9 @@ impl Disktree {
         };
         match outcome {
             Ok(node) => {
-                self.root_snapshot = self.scan_root_snapshot.as_ref()
+                self.root_snapshot = self
+                    .scan_root_snapshot
+                    .as_ref()
                     .filter(|saved| saved.matches(&self.scan_root))
                     .cloned();
                 // A widening scan lands on a new root: move the view up to it,
