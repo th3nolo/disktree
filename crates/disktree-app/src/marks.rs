@@ -63,14 +63,16 @@ impl Marks {
     /// longer exists, so the tally never claims space that is already gone.
     pub fn refresh(&mut self, root_path: &Path, root: &Node, metric: Metric) {
         self.items.retain_mut(|item| {
-            let Some(node) = find(root_path, root, &item.path) else {
-                return false;
-            };
             if item.identity.is_some()
                 && entry_identity(&item.path) != item.identity
             {
                 return false;
             }
+            let Some(node) = find(root_path, root, &item.path) else {
+                // A scan says nothing about entries outside its root.
+                // They stay marked but the plan keeps them back.
+                return item.path.strip_prefix(root_path).is_err();
+            };
             item.bytes = node.value(metric);
             item.is_dir = node.is_dir();
             item.hidden = is_hidden(&item.path);
@@ -217,6 +219,34 @@ mod tests {
 
         marks.refresh(temp.path(), &root, Metric::Bytes);
         assert!(marks.is_empty());
+        assert!(!marks.contains(&path));
+    }
+
+    #[test]
+    fn refresh_keeps_verified_marks_outside_the_new_scan() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let old = temp.path().join("old");
+        let new = temp.path().join("new");
+        std::fs::create_dir(&old).expect("mkdir");
+        std::fs::create_dir(&new).expect("mkdir");
+        let path = old.join("notes.bin");
+        std::fs::write(&path, b"original").expect("write");
+        let mut item = target(path.to_str().expect("text path"), 8);
+        item.identity = Some(entry_identity(&path).expect("identity"));
+        let mut marks = Marks::default();
+        marks.toggle(item);
+
+        marks.refresh(&new, &Node::directory("root"), Metric::Bytes);
+        assert_eq!(marks.len(), 1);
+        assert!(marks.contains(&path));
+        assert_eq!(marks.items()[0].bytes, 8);
+        let planned = disktree_core::removal::plan(marks.items(), &new);
+        assert!(planned.is_empty());
+        assert!(planned.blocked[0].reason.contains("outside"));
+        std::fs::rename(&path, old.join("original.bin")).expect("move");
+        std::fs::write(&path, b"replacement").expect("write");
+        marks.refresh(&new, &Node::directory("root"), Metric::Bytes);
+        assert!(marks.is_empty(), "a replacement still loses its mark");
         assert!(!marks.contains(&path));
     }
 

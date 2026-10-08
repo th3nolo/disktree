@@ -8,6 +8,8 @@ Base: `tobi/disktree` v0.11.0, commit
 - Capture the identity of each marked entry, without following a final link.
   Missing or replaced entries lose their marks instead of authorizing a new
   occupant of the same path. Refresh also rebuilds the mark index.
+  Verified marks outside a new scan stay kept back: the absence of a path
+  from a different root is not evidence that the entry disappeared.
 - A lossy name must never become an actionable path. Names containing U+FFFD
   are conservatively refused, including literal U+FFFD names, because the
   current tree cannot distinguish them from invalid UTF-16/UTF-8 names.
