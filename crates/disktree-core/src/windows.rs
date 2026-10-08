@@ -463,16 +463,167 @@ pub fn identity(path: &Path) -> Option<(u64, u64)> {
 
 /// Identity of a marked entry itself: a link must never borrow its target's
 /// identity, or replacing the link could silently preserve its authorization.
-pub fn entry_identity(path: &Path) -> Option<(u64, u64)> {
+pub fn entry_identity(path: &Path) -> Option<crate::removal::EntryIdentity> {
     let file = OpenOptions::new()
         .access_mode(FILE_READ_ATTRIBUTES)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
         .ok()?;
-    let info = winapi_util::file::information(&file).ok()?;
-    let index = info.file_index();
-    (index != 0 && index != u64::MAX)
-        .then(|| (info.volume_serial_number(), index))
+    handle_identity(&file).ok()
+}
+
+/// Keep every ancestor open without sharing delete or write access. A
+/// rename or conversion to a reparse point must fail while removal uses
+/// the canonical path, including when the scanned root was named by an alias.
+#[derive(Debug)]
+pub(crate) struct RemovalGuard {
+    pub path: PathBuf,
+    _parents: Vec<File>,
+}
+
+pub(crate) fn pin_parent(
+    path: &Path,
+    root: &Path,
+    expected: Option<crate::removal::EntryIdentity>,
+) -> io::Result<RemovalGuard> {
+    let invalid = || io::Error::other("not a normalized path inside the scanned root");
+    if !path.is_absolute() || !root.is_absolute() {
+        return Err(invalid());
+    }
+    let name = path.file_name().ok_or_else(invalid)?;
+    let below = path.parent()
+        .and_then(|parent| parent.strip_prefix(root).ok())
+        .ok_or_else(invalid)?;
+    if below.components().any(|part| !matches!(part, Component::Normal(_))) {
+        return Err(invalid());
+    }
+    let canonical = fs::canonicalize(root)?;
+    let mut parents = Vec::new();
+    // Lock from the volume down: otherwise an unlocked ancestor can rename
+    // the directory between opening it and opening the next component.
+    let ancestors: Vec<_> = canonical.ancestors().collect();
+    for ancestor in ancestors.into_iter().rev() {
+        parents.push(pin_directory(ancestor)?);
+    }
+    let actual = handle_identity(parents.last().ok_or_else(invalid)?)?;
+    if expected.is_some_and(|expected| actual != expected) {
+        return Err(io::Error::other("the scanned root changed"));
+    }
+    let mut parent = canonical;
+    for part in below.components() {
+        parent.push(part.as_os_str());
+        parents.push(pin_directory(&parent)?);
+    }
+    Ok(RemovalGuard {
+        path: parent.join(name),
+        _parents: parents,
+    })
+}
+
+fn pin_directory(path: &Path) -> io::Result<File> {
+    let file = OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_dir() || meta.file_type().is_symlink() {
+        return Err(io::Error::other("changed since the scan: no longer a directory"));
+    }
+    Ok(file)
+}
+
+/// Query the full id, rather than the legacy 64-bit index whose high half
+/// can alias another entry on ReFS. Unsupported filesystems fail closed.
+fn handle_identity(file: &File) -> io::Result<crate::removal::EntryIdentity> {
+    use windows_sys::Win32::Storage::FileSystem::{FILE_ID_INFO, FileIdInfo};
+    // SAFETY: FILE_ID_INFO contains only integers and a byte array, for
+    // which every bit pattern is valid; Windows fills it before it is read.
+    let mut info: FILE_ID_INFO = unsafe { std::mem::zeroed() };
+    // SAFETY: the file owns a live handle; the initialized buffer has the
+    // exact size and layout required by FileIdInfo and outlives the call.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            (&raw mut info).cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let id = u128::from_le_bytes(info.FileId.Identifier);
+    if id == 0 || id == u128::MAX {
+        return Err(io::Error::other("the filesystem cannot verify this entry"));
+    }
+    Ok((info.VolumeSerialNumber, id))
+}
+
+/// Remove the entry we opened, never a later occupant of its path. The
+/// parent guard must stay alive until this finishes. All recursive entries
+/// are opened without following reparse points and without sharing writes
+/// or deletion, so each directory stays put while its children are listed.
+pub(crate) fn remove_guarded(
+    path: &Path,
+    expected: Option<crate::removal::EntryIdentity>,
+) -> io::Result<()> {
+    let file = open_removal(path)?;
+    let identity = handle_identity(&file)?;
+    if expected.is_some_and(|expected| identity != expected) {
+        return Err(io::Error::other("the marked entry changed"));
+    }
+    remove_opened(path, &file, identity.0)
+}
+
+fn open_removal(path: &Path) -> io::Result<File> {
+    use windows_sys::Win32::Storage::FileSystem::DELETE;
+    OpenOptions::new()
+        .access_mode(DELETE | FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+fn remove_opened(path: &Path, file: &File, volume: u64) -> io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_DISPOSITION_FLAG_DELETE,
+        FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+        FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO_EX,
+        FileDispositionInfoEx, SetFileInformationByHandle,
+    };
+    let meta = file.metadata()?;
+    if meta.is_dir() && meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+        if handle_identity(file)?.0 != volume {
+            return Err(io::Error::other("a different volume was not removed"));
+        }
+        for entry in fs::read_dir(path)? {
+            let child = entry?.path();
+            let opened = open_removal(&child)?;
+            remove_opened(&child, &opened, volume)?;
+        }
+    }
+    let info = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_FLAG_DELETE
+            | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+            | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+    };
+    // SAFETY: file holds the same entry whose identity and attributes we
+    // checked, with DELETE access. The correctly sized buffer outlives the
+    // call. No path-based fallback may remove a different entry.
+    let ok = unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileDispositionInfoEx,
+            (&raw const info).cast(),
+            size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+        )
+    };
+    if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 /// Serial number of the volume every directory under `canonical` is on,
@@ -1027,6 +1178,45 @@ mod tests {
         assert!(entry.allocated() >= 100_000, "{}", entry.allocated());
         assert!(entry.allocated() < 100_000 + 2 * 1024 * 1024);
         assert_eq!(entry.allocated() % 512, 0);
+    }
+
+    #[test]
+    fn a_removal_guard_pins_the_root_and_parent_until_it_is_dropped() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("root");
+        fs::create_dir_all(root.join("parent")).expect("mkdir");
+        let path = root.join("parent/file.bin");
+        fs::write(&path, b"keep").expect("write");
+        let expected = entry_identity(&root).expect("identity");
+        let guard = pin_parent(&path, &root, Some(expected)).expect("guard");
+
+        assert!(fs::rename(&root, temp.path().join("moved")).is_err());
+        assert!(fs::rename(root.join("parent"), root.join("other")).is_err());
+        assert!(pin_parent(&temp.path().join("outside"), &root, Some(expected)).is_err());
+        drop(guard);
+        fs::rename(&root, temp.path().join("moved")).expect("unlocked");
+        assert!(temp.path().join("moved/parent/file.bin").exists());
+    }
+
+    #[test]
+    fn handle_removal_rejects_a_replacement_and_keeps_its_neighbours() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("marked.bin");
+        fs::write(&path, b"original").expect("write");
+        let expected = entry_identity(&path).expect("identity");
+        fs::rename(&path, temp.path().join("original.bin")).expect("move");
+        fs::write(&path, b"replacement").expect("write");
+        let keep = temp.path().join("neighbour.bin");
+        fs::write(&keep, b"keep").expect("write");
+
+        assert!(remove_guarded(&path, Some(expected)).is_err());
+        assert_eq!(fs::read(&path).expect("read"), b"replacement");
+        assert!(keep.exists());
+        let current = entry_identity(&path).expect("identity");
+        remove_guarded(&path, Some(current)).expect("removed");
+        assert!(!path.exists());
+        assert!(keep.exists());
+        assert!(temp.path().join("original.bin").exists());
     }
 
     #[test]

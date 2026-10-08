@@ -33,14 +33,17 @@ pub struct Target {
     pub is_dir: bool,
     pub hidden: bool,
     /// The entry that was marked, not whichever later occupies its path.
-    pub identity: Option<(u64, u64)>,
+    pub identity: Option<EntryIdentity>,
 }
+
+/// A full file id and its volume: Windows ReFS needs all 128 id bits.
+pub type EntryIdentity = (u64, u128);
 
 /// The directory the user actually scanned, including aliases above it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RootSnapshot {
     real: PathBuf,
-    identity: (u64, u64),
+    identity: EntryIdentity,
 }
 
 impl RootSnapshot {
@@ -50,7 +53,7 @@ impl RootSnapshot {
             return None;
         }
         Some(Self {
-            identity: identity(&real, true)?,
+            identity: entry_identity(&real)?,
             real,
         })
     }
@@ -61,8 +64,14 @@ impl RootSnapshot {
 }
 
 /// Identity of the named entry itself, without following a final link.
-pub fn entry_identity(path: &Path) -> Option<(u64, u64)> {
-    identity(path, false)
+#[cfg(not(windows))]
+pub fn entry_identity(path: &Path) -> Option<EntryIdentity> {
+    identity(path, false).map(|(device, inode)| (device, u128::from(inode)))
+}
+
+#[cfg(windows)]
+pub fn entry_identity(path: &Path) -> Option<EntryIdentity> {
+    crate::windows::entry_identity(path)
 }
 
 /// How a removal should be carried out.
@@ -662,12 +671,8 @@ fn identity(path: &Path, follow: bool) -> Option<(u64, u64)> {
 /// the home directory is refused as the home directory, which is only ever
 /// too careful.
 #[cfg(windows)]
-fn identity(path: &Path, follow: bool) -> Option<(u64, u64)> {
-    if follow {
-        crate::windows::identity(path)
-    } else {
-        crate::windows::entry_identity(path)
-    }
+fn identity(path: &Path, _follow: bool) -> Option<(u64, u64)> {
+    crate::windows::identity(path)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -1194,12 +1199,7 @@ fn run(
         let outcome = if let Some(reason) = reason {
             Err(io::Error::other(reason))
         } else {
-            match mode {
-                RemovalMode::Permanent => {
-                    remove_permanently(&target.path, &plan.root)
-                }
-                RemovalMode::Trash => move_to_trash(&target.path, backend),
-            }
+            perform_removal(target, plan, mode, backend)
         };
         if outcome.is_ok() {
             removed += 1;
@@ -1231,6 +1231,51 @@ fn run(
         bytes,
         failed,
     });
+}
+
+#[cfg(not(windows))]
+fn perform_removal(
+    target: &Target,
+    plan: &Plan,
+    mode: RemovalMode,
+    backend: TrashBackend,
+) -> io::Result<()> {
+    match mode {
+        RemovalMode::Permanent => remove_permanently(&target.path, &plan.root),
+        RemovalMode::Trash => move_to_trash(&target.path, backend),
+    }
+}
+
+#[cfg(windows)]
+fn perform_removal(
+    target: &Target,
+    plan: &Plan,
+    mode: RemovalMode,
+    backend: TrashBackend,
+) -> io::Result<()> {
+    let saved = plan.root_snapshot.as_ref()
+        .ok_or_else(|| io::Error::other("the scanned root cannot be verified"))?;
+    let guard = crate::windows::pin_parent(
+        &target.path,
+        &plan.root,
+        Some(saved.identity),
+    )?;
+    if !saved.matches(&plan.root) {
+        return Err(io::Error::other("the scanned root changed"));
+    }
+    match mode {
+        RemovalMode::Permanent => {
+            crate::windows::remove_guarded(&guard.path, target.identity)
+        }
+        RemovalMode::Trash => {
+            if target.identity.is_some()
+                && entry_identity(&guard.path) != target.identity
+            {
+                return Err(io::Error::other("the marked entry changed"));
+            }
+            move_to_trash(&guard.path, backend)
+        }
+    }
 }
 
 /// Why `path` would reach into another filesystem, if it would: the
@@ -1367,7 +1412,20 @@ fn open_step<P: rustix::path::Arg>(
     )
 }
 
-#[cfg(not(unix))]
+/// On Windows, pin the ancestry and delete through the opened entry's
+/// handle. A substituted junction never becomes a recursive root.
+#[cfg(windows)]
+pub fn remove_permanently(path: &Path, root: &Path) -> io::Result<()> {
+    let saved = RootSnapshot::capture(root)
+        .ok_or_else(|| io::Error::other("the scanned root cannot be verified"))?;
+    let guard = crate::windows::pin_parent(path, root, Some(saved.identity))?;
+    if !saved.matches(root) {
+        return Err(io::Error::other("the scanned root changed"));
+    }
+    crate::windows::remove_guarded(&guard.path, None)
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn remove_permanently(path: &Path, _root: &Path) -> io::Result<()> {
     let meta = fs::symlink_metadata(path)?;
     if meta.is_dir() {
@@ -1494,12 +1552,6 @@ fn remove_contents(
         unlinkat(dir, &name, AtFlags::REMOVEDIR)?;
     }
     Ok(())
-}
-
-#[cfg(windows)]
-fn is_dir_link(meta: &fs::Metadata) -> bool {
-    use std::os::windows::fs::FileTypeExt as _;
-    meta.file_type().is_symlink_dir()
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -2280,7 +2332,6 @@ mod tests {
     /// Marked as `a/b/x`, then `a/b` swapped for a link to somewhere else
     /// holding an `x`: that other `x` must survive.
     #[test]
-    #[cfg(unix)]
     fn permanent_removal_does_not_follow_a_link_put_on_the_way_down() {
         let temp = tree();
         let keep = TempDir::new().expect("tempdir");
