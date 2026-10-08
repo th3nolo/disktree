@@ -39,3 +39,11 @@ Antivirus reports for upstream release binaries remain unresolved by these
 source changes. No upstream executable was run on the user's PC. A clean
 source review and passing tests do not establish that a downloaded binary
 is malware-free.
+
+The Windows CI continuation also records the built candidate's source,
+toolchain, dependencies, PE imports, hashes, and Defender scan results.
+Candidate uploads require successful executable and ZIP scans and a
+non-GUI startup check; failed validation preserves evidence only. These
+build records are unsigned and do not establish the provenance of upstream
+downloads. See [windows-validation.md](windows-validation.md) for the
+procedure and the desktop checks that remain separate from hosted CI.
