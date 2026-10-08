@@ -308,6 +308,9 @@ unreadable in the top bar rather than guessed at.
 
 The same program, with Windows' answers to the questions above:
 
+- **Git status** is disabled in this personal fork. Selecting a checkout
+  never starts `git.exe`, and the panel says **status disabled**. Changes,
+  stashes and unpushed commits must be checked separately before removal.
 - **Disk usage** is the allocation NTFS reports for each file: whole
   clusters, less for a compressed or sparse file, nothing for one small
   enough to live in its file record. It arrives with the directory listing
@@ -368,7 +371,8 @@ tested:
   pacman, paccache or `journalctl --vacuum` are the tools;
 - a symlink is unlinked, never followed;
 - nothing is passed through a shell — a file called `-rf` is just a file;
-- selecting a checkout never runs a program it names: git is asked with its
+- on Windows, automatic Git inspection is disabled; on Linux and macOS,
+  selecting a checkout never runs a program it names: git is asked with its
   fsmonitor, hooks and pager off, and a checkout that defines its own filter
   drivers is not asked for its status at all ("changes unknown").
 

@@ -3,9 +3,11 @@
 //! Before deleting an agent worktree the question is "would anything be
 //! lost": uncommitted changes, stashes, commits nobody pushed. That is three
 //! cheap git calls, run off the UI thread when a checkout is selected and
-//! remembered per path.
+//! remembered per path. Windows leaves inspection disabled until a trusted
+//! executable can be selected without searching beside the app or on PATH.
 
 use std::path::Path;
+#[cfg(not(windows))]
 use std::process::{Command, Stdio};
 
 /// A checkout's state, as far as losing work is concerned.
@@ -56,9 +58,19 @@ pub fn is_checkout(path: &Path) -> bool {
     std::fs::symlink_metadata(path.join(".git")).is_ok()
 }
 
-/// Ask git. `None` when `path` is not a checkout or git is not installed.
+/// Whether selecting a checkout may start automatic Git inspection.
+///
+/// A portable Windows app has no trusted Git installation. Searching for
+/// `git.exe` can run an executable planted beside the app, with the app's
+/// privileges. Until there is explicit executable selection, fail closed.
+pub const fn inspection_enabled() -> bool {
+    !cfg!(windows)
+}
+
+/// Ask git. `None` when inspection is disabled, `path` is not a checkout,
+/// or git is not installed.
 pub fn state(path: &Path) -> Option<GitState> {
-    if !is_checkout(path) || !git_installed() {
+    if !inspection_enabled() || !is_checkout(path) || !git_installed() {
         return None;
     }
     let changed = if names_its_own_filters(path) {
@@ -89,18 +101,21 @@ pub fn state(path: &Path) -> Option<GitState> {
     })
 }
 
+#[cfg(not(target_os = "macos"))]
+const fn git_installed() -> bool {
+    inspection_enabled()
+}
+
 /// Whether running `git` runs git. On macOS `/usr/bin/git` is there even
 /// without the developer tools, as a stub that opens an "install the command
 /// line developer tools" dialog, which selecting a checkout must not do.
 /// `xcode-select -p` answers without prompting. It names the selected
 /// developer directory even after that directory was deleted, so the path
 /// must also still be there. Asked once.
+#[cfg(target_os = "macos")]
 fn git_installed() -> bool {
     static INSTALLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *INSTALLED.get_or_init(|| {
-        if !cfg!(target_os = "macos") {
-            return true;
-        }
         Command::new("xcode-select")
             .arg("-p")
             .stdin(Stdio::null())
@@ -156,15 +171,16 @@ fn run(path: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+// Keep the subprocess boundary closed even if a future caller bypasses
+// `state`'s availability check. Windows builds contain no Git spawn path.
+#[cfg(windows)]
+const fn git(_path: &Path, _args: &[&str]) -> Option<std::process::Output> {
+    None
+}
+
+#[cfg(not(windows))]
 fn git(path: &Path, args: &[&str]) -> Option<std::process::Output> {
     let mut command = Command::new("git");
-    // disktree is a GUI program on Windows, with no console to lend: without
-    // this, every probe flashes a console window of its own.
-    #[cfg(windows)]
-    std::os::windows::process::CommandExt::creation_flags(
-        &mut command,
-        0x0800_0000, // CREATE_NO_WINDOW
-    );
     command
         .arg("-C")
         .arg(path)
@@ -240,6 +256,29 @@ mod tests {
         assert!(!guarded.is_clean(), "unknown is not clean");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_checkout_inspection_stays_disabled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (name, worktree) in [("checkout", false), ("worktree", true)] {
+            let path = dir.path().join(name);
+            std::fs::create_dir(&path).expect("checkout directory");
+            let metadata = path.join(".git");
+            if worktree {
+                std::fs::write(&metadata, "gitdir: elsewhere")
+                    .expect("worktree");
+            } else {
+                std::fs::create_dir(&metadata).expect("git directory");
+            }
+            assert!(is_checkout(&path));
+            assert!(!inspection_enabled());
+            assert!(!git_installed());
+            assert!(state(&path).is_none(), "no automatic Git state");
+            assert!(git(&path, &["status"]).is_none(), "no subprocess");
+        }
+    }
+
+    #[cfg(not(windows))]
     #[test]
     fn reads_a_real_checkout() {
         let dir = tempfile::tempdir().expect("tempdir");

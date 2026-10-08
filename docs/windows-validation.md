@@ -5,14 +5,31 @@ and `cargo xtask test` gates, then builds with the same static C runtime
 flag as the portable release. It validates the built executable before
 making a review candidate available. It does not publish a release.
 
+Automatic Git inspection is disabled on Windows. Both checkout selection
+and the Git subprocess boundary refuse it; the panel says **status
+disabled**. Check repository changes, stashes and unpushed commits
+separately before deciding to remove a checkout.
+
+## Adjacent Git executable regression
+
+Before the Windows lint and test gates, CI compiles the application's exact
+Git module into a small probe and places an inert `git.exe` beside it. A
+control call proves that the helper can create its marker. The probe then
+selects a fixture checkout: Git state must be unavailable and the marker
+must stay absent. The same fixture demonstrates execution with the original
+vulnerable module. This runs on the hosted runner; it never launches the
+candidate on the user's desktop.
+
 ## Evidence and candidate
 
-Open the PR's **CI / Lint and test (Windows)** run. Two Actions artifacts
+Open the PR's **CI / Lint and test (Windows)** run. Three Actions artifacts
 are used:
 
 - `windows-validation-evidence`: build records, the locked dependency
   tree, PE imports when the SDK tool is available, Defender output, and
   `validation.json`. Evidence is kept even when validation fails.
+- `windows-git-helper-regression`: records the adjacent-helper test,
+  including its control and the checkout probe.
 - `windows-candidate`: a ZIP and its SHA-256 sidecar. This exists only
   after the lint, tests, executable scan, startup check, and ZIP scan pass.
 
@@ -87,7 +104,9 @@ Open the candidate with `$scanRoot` as its path and check:
    and the outside sentinel intact.
 4. After marking a file, rename it and create a new file at the old path.
    Refresh must drop the mark; the new occupant must survive.
-5. After a scan, rename the scanned folder and put a junction at its old
+5. Select a directory containing `.git`. The panel must say **status
+   disabled**, without treating the checkout as clean.
+6. After a scan, rename the scanned folder and put a junction at its old
    path to another disposable folder. Removal from the old review must
    refuse, preserving sentinels in both folders.
 

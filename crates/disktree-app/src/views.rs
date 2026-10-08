@@ -347,7 +347,10 @@ fn explore(
     // The panel is where the selection, the marks and the disk live; it
     // only gives way when the mosaic would be too narrow to read.
     let panel = app.show_selection && width_rems >= PANEL_SHOWN_REMS;
-    if panel && let Some(path) = selection_checkout(app) {
+    if panel
+        && crate::git::inspection_enabled()
+        && let Some(path) = selection_checkout(app)
+    {
         app.ensure_git(&path, cx);
     }
 
@@ -1446,10 +1449,14 @@ fn selection_section(
         && let Some(path) = &path
         && crate::git::is_checkout(path)
     {
-        let value = match app.git.get(path) {
-            Some(Some(state)) => state.summary(),
-            Some(None) => "not readable".to_string(),
-            None => "asking\u{2026}".to_string(),
+        let value = if crate::git::inspection_enabled() {
+            match app.git.get(path) {
+                Some(Some(state)) => state.summary(),
+                Some(None) => "not readable".to_string(),
+                None => "asking\u{2026}".to_string(),
+            }
+        } else {
+            "status disabled".to_string()
         };
         let clean =
             matches!(app.git.get(path), Some(Some(state)) if state.is_clean());
