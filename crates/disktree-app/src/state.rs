@@ -648,11 +648,8 @@ impl Disktree {
                 path: self.root_path.clone(),
                 tree,
             });
-        self.scan = Some(ScanHandle::spawn_with(
-            above,
-            self.options.clone(),
-            known,
-        ));
+        self.scan =
+            Some(ScanHandle::spawn_with(above, self.options.clone(), known));
         Self::poll_scan(epoch, cx);
         cx.notify();
     }
