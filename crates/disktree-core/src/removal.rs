@@ -32,6 +32,37 @@ pub struct Target {
     pub bytes: u64,
     pub is_dir: bool,
     pub hidden: bool,
+    /// The entry that was marked, not whichever later occupies its path.
+    pub identity: Option<(u64, u64)>,
+}
+
+/// The directory the user actually scanned, including aliases above it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RootSnapshot {
+    real: PathBuf,
+    identity: (u64, u64),
+}
+
+impl RootSnapshot {
+    pub fn capture(root: &Path) -> Option<Self> {
+        let real = fs::canonicalize(root).ok()?;
+        if !fs::metadata(&real).ok()?.is_dir() {
+            return None;
+        }
+        Some(Self {
+            identity: identity(&real, true)?,
+            real,
+        })
+    }
+
+    pub fn matches(&self, root: &Path) -> bool {
+        Self::capture(root).as_ref() == Some(self)
+    }
+}
+
+/// Identity of the named entry itself, without following a final link.
+pub fn entry_identity(path: &Path) -> Option<(u64, u64)> {
+    identity(path, false)
 }
 
 /// How a removal should be carried out.
@@ -78,6 +109,8 @@ pub struct Plan {
     pub blocked: Vec<Blocked>,
     /// The scanned root the targets were judged against.
     pub root: PathBuf,
+    /// Kept from planning; a new resolution cannot authorize a new root.
+    root_snapshot: Option<RootSnapshot>,
     /// Bytes the targets free on `root`'s volume; see [`Self::reclaim`].
     reclaim: u64,
     /// Bytes the targets free on other volumes; see [`Self::foreign`].
@@ -125,6 +158,30 @@ pub fn plan(targets: &[Target], root: &Path) -> Plan {
     plan_against(targets, root, &mount_points())
 }
 
+/// Plan against the root captured before the displayed scan started.
+/// An unverifiable or replaced root requires another scan and new marks.
+pub fn plan_from_scan(
+    targets: &[Target],
+    root: &Path,
+    snapshot: Option<&RootSnapshot>,
+) -> Plan {
+    let mut result = plan(targets, root);
+    if snapshot.is_none() || result.root_snapshot.as_ref() != snapshot {
+        for target in result.targets.drain(..).chain(result.covered.drain(..)) {
+            result.blocked.push(Blocked {
+                path: target.path,
+                reason: "the scanned root changed or cannot be verified; \
+                         rescan and mark again"
+                    .into(),
+            });
+        }
+        result.reclaim = 0;
+        result.foreign = 0;
+    }
+    result.root_snapshot = snapshot.cloned();
+    result
+}
+
 /// [`plan`] against a given read of the mount table, for testing.
 ///
 /// One read answers both what may be removed and which volume each target's
@@ -134,6 +191,7 @@ fn plan_against(targets: &[Target], root: &Path, mounts: &MountTable) -> Plan {
     let root = normalize(root);
     let mut plan = Plan {
         root: root.clone(),
+        root_snapshot: RootSnapshot::capture(&root),
         ..Plan::default()
     };
     let mut accepted: Vec<Target> = Vec::new();
@@ -143,15 +201,16 @@ fn plan_against(targets: &[Target], root: &Path, mounts: &MountTable) -> Plan {
     }
     // Once per plan, not per target: the review screen plans every frame.
     let home = std::env::home_dir().map(|home| Home::of(&home));
-    let real_root = fs::canonicalize(&root).ok();
+    let real_root = plan.root_snapshot.as_ref().map(|saved| &saved.real);
 
     for target in targets {
         let path = normalize(&target.path);
         let reason =
             refuse(&path, &root, home.as_ref(), &mounts.points, &mounts.media)
                 .or_else(|| {
-                    linked(&path, &root, real_root.as_deref(), home.as_ref())
-                });
+                    linked(&path, &root, real_root.map(PathBuf::as_path), home.as_ref())
+                })
+                .or_else(|| changed_entry(target));
         if let Some(reason) = reason {
             plan.blocked.push(Blocked {
                 path: target.path.clone(),
@@ -417,6 +476,11 @@ fn refuse(
     mounts: &[PathBuf],
     media: &[PathBuf],
 ) -> Option<String> {
+    if !addressable(path) {
+        return Some("the name cannot be represented unambiguously; \
+                     nothing will be removed"
+            .into());
+    }
     let key = guard_key(path);
     let root_key = guard_key(root);
     let home_key = home.map(|home| home.key.as_path());
@@ -557,6 +621,22 @@ fn linked(
     None
 }
 
+/// Lossy names collide with literal replacement characters in the tree.
+/// Refusing both is conservative and keeps every node at its current size.
+pub fn addressable(path: &Path) -> bool {
+    path.to_str()
+        .is_some_and(|name| !name.contains(char::REPLACEMENT_CHARACTER))
+}
+
+fn changed_entry(target: &Target) -> Option<String> {
+    target.identity.and_then(|expected| {
+        (entry_identity(&target.path) != Some(expected)).then(|| {
+            "the marked entry changed or disappeared; rescan and mark again"
+                .into()
+        })
+    })
+}
+
 /// `(device, inode)`: what makes two spellings one directory entry.
 /// `follow` decides whether a symlink at `path` answers for itself or for
 /// what it points to.
@@ -575,8 +655,12 @@ fn identity(path: &Path, follow: bool) -> Option<(u64, u64)> {
 /// the home directory is refused as the home directory, which is only ever
 /// too careful.
 #[cfg(windows)]
-fn identity(path: &Path, _follow: bool) -> Option<(u64, u64)> {
-    crate::windows::identity(path)
+fn identity(path: &Path, follow: bool) -> Option<(u64, u64)> {
+    if follow {
+        crate::windows::identity(path)
+    } else {
+        crate::windows::entry_identity(path)
+    }
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -1060,7 +1144,7 @@ fn run(
     // the trash out of the root. Permanent removal on Unix refuses that by
     // itself; see [`open_parent`].
     let home = std::env::home_dir().map(|home| Home::of(&home));
-    let real_root = fs::canonicalize(&plan.root).ok();
+    let real_root = plan.root_snapshot.as_ref().map(|saved| &saved.real);
 
     for target in &plan.targets {
         if cancel.load(Ordering::Relaxed) {
@@ -1086,10 +1170,17 @@ fn run(
                 linked(
                     &target.path,
                     &plan.root,
-                    real_root.as_deref(),
+                    real_root.map(PathBuf::as_path),
                     home.as_ref(),
                 )
-            });
+            })
+            .or_else(|| {
+                (!plan.root_snapshot.as_ref().is_some_and(|saved| {
+                    saved.matches(&plan.root)
+                }))
+                .then(|| "the scanned root changed or cannot be verified".into())
+            })
+            .or_else(|| changed_entry(target));
         let outcome = if let Some(reason) = reason {
             Err(io::Error::other(reason))
         } else {
@@ -1602,6 +1693,7 @@ mod tests {
             bytes,
             is_dir: path.is_dir(),
             hidden: false,
+            identity: entry_identity(path),
         }
     }
 
@@ -2243,6 +2335,95 @@ mod tests {
         let error = outcome.expect("an item").expect_err("refused");
         assert!(error.contains("through a link"), "{error}");
         assert!(keep.path().join("x/precious.bin").exists());
+    }
+
+    fn run_outcomes(plan: &Plan, mode: RemovalMode) -> Vec<Result<(), String>> {
+        let (sender, receiver) = mpsc::channel();
+        run(
+            plan,
+            mode,
+            TrashBackend::Unavailable,
+            &AtomicBool::new(false),
+            &sender,
+        );
+        drop(sender);
+        receiver
+            .into_iter()
+            .filter_map(|event| match event {
+                RemovalEvent::Item { outcome, .. } => Some(outcome),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_root_replaced_before_review_is_not_a_new_authorization() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path().join("root");
+        fs::create_dir(&root).expect("mkdir");
+        fs::write(root.join("file.bin"), b"original").expect("write");
+        let saved = RootSnapshot::capture(&root).expect("snapshot");
+        let marked = target(&root.join("file.bin"), 8);
+        fs::rename(&root, temp.path().join("original")).expect("move");
+        fs::create_dir(&root).expect("mkdir");
+        fs::write(root.join("file.bin"), b"replacement").expect("write");
+
+        let plan = plan_from_scan(&[marked], &root, Some(&saved));
+        assert!(plan.is_empty());
+        assert_eq!(plan.blocked.len(), 1);
+        assert!(root.join("file.bin").exists());
+    }
+
+    #[test]
+    fn a_root_retargeted_after_planning_stops_every_removal_mode() {
+        for mode in [RemovalMode::Permanent, RemovalMode::Trash] {
+            let temp = TempDir::new().expect("tempdir");
+            let root = temp.path().join("root");
+            let keep = temp.path().join("keep");
+            fs::create_dir(&root).expect("mkdir");
+            fs::create_dir(&keep).expect("mkdir");
+            fs::write(root.join("precious.bin"), b"original").expect("write");
+            fs::write(keep.join("precious.bin"), b"keep").expect("write");
+            let plan = plan(&[target(&root.join("precious.bin"), 8)], &root);
+            assert_eq!(plan.targets.len(), 1);
+            fs::rename(&root, temp.path().join("original")).expect("move");
+            link_dir(&keep, &root);
+
+            let outcomes = run_outcomes(&plan, mode);
+            assert_eq!(outcomes.len(), 1);
+            assert!(outcomes[0].is_err(), "{outcomes:?}");
+            assert_eq!(fs::read(keep.join("precious.bin")).expect("read"), b"keep");
+            assert!(temp.path().join("original/precious.bin").exists());
+        }
+    }
+
+    #[test]
+    fn a_replaced_marked_entry_is_refused_before_the_worker_touches_it() {
+        let temp = tree();
+        let path = temp.path().join("a/one.bin");
+        let marked = target(&path, 10);
+        let planned = plan(std::slice::from_ref(&marked), temp.path());
+        fs::rename(&path, temp.path().join("original.bin")).expect("move");
+        fs::write(&path, b"replacement").expect("write");
+
+        let reviewed = plan(&[marked], temp.path());
+        assert!(reviewed.is_empty());
+        let outcomes = run_outcomes(&planned, RemovalMode::Permanent);
+        assert_eq!(outcomes.len(), 1);
+        assert!(outcomes[0].is_err());
+        assert_eq!(fs::read(&path).expect("read"), b"replacement");
+        assert!(temp.path().join("a/c.bin").exists());
+    }
+
+    #[test]
+    fn ambiguous_unicode_paths_are_never_removal_targets() {
+        let temp = tree();
+        let path = temp.path().join("bad\u{fffd}");
+        fs::write(&path, b"keep").expect("write");
+        let planned = plan(&[target(&path, 4)], temp.path());
+        assert!(planned.is_empty());
+        assert!(planned.blocked[0].reason.contains("unambiguously"));
+        assert!(path.exists());
     }
 
     #[test]

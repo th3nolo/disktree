@@ -32,6 +32,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_HIDDEN,
     FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_RECALL_ON_OPEN,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT,
     FILE_ID_EXTD_DIR_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
     FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     FileIdExtdDirectoryInfo, FindFirstVolumeW, FindNextVolumeW,
@@ -456,6 +457,20 @@ fn file_id(id: u128) -> Option<u64> {
 /// [MS-FSCC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/2d3333fe-fc98-4a6f-98a2-4bb805aff407
 pub fn identity(path: &Path) -> Option<(u64, u64)> {
     let info = information(path)?;
+    let index = info.file_index();
+    (index != 0 && index != u64::MAX)
+        .then(|| (info.volume_serial_number(), index))
+}
+
+/// Identity of a marked entry itself: a link must never borrow its target's
+/// identity, or replacing the link could silently preserve its authorization.
+pub fn entry_identity(path: &Path) -> Option<(u64, u64)> {
+    let file = OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .ok()?;
+    let info = winapi_util::file::information(&file).ok()?;
     let index = info.file_index();
     (index != 0 && index != u64::MAX)
         .then(|| (info.volume_serial_number(), index))

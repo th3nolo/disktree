@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use disktree_core::removal::Target;
+use disktree_core::removal::{Target, addressable, entry_identity};
 use disktree_core::tree::{Metric, Node};
 use rustc_hash::FxHashSet;
 
@@ -62,22 +62,21 @@ impl Marks {
     /// Re-read sizes from a freshly scanned tree and drop marks whose path no
     /// longer exists, so the tally never claims space that is already gone.
     pub fn refresh(&mut self, root_path: &Path, root: &Node, metric: Metric) {
-        let mut resolved = Vec::with_capacity(self.items.len());
-        for item in &self.items {
-            match find(root_path, root, &item.path) {
-                Some(node) => resolved.push(Target {
-                    bytes: node.value(metric),
-                    is_dir: node.is_dir(),
-                    hidden: is_hidden(&item.path),
-                    path: item.path.clone(),
-                }),
-                None => resolved.push(Target {
-                    bytes: 0,
-                    ..item.clone()
-                }),
+        self.items.retain_mut(|item| {
+            let Some(node) = find(root_path, root, &item.path) else {
+                return false;
+            };
+            if item.identity.is_some()
+                && entry_identity(&item.path) != item.identity
+            {
+                return false;
             }
-        }
-        self.items = resolved;
+            item.bytes = node.value(metric);
+            item.is_dir = node.is_dir();
+            item.hidden = is_hidden(&item.path);
+            true
+        });
+        self.index = self.items.iter().map(|item| item.path.clone()).collect();
     }
 }
 
@@ -88,6 +87,9 @@ pub fn find<'a>(
     root: &'a Node,
     path: &Path,
 ) -> Option<&'a Node> {
+    if !addressable(path) {
+        return None;
+    }
     let relative = path.strip_prefix(root_path).ok()?;
     let mut node = root;
     for component in relative.components() {
@@ -146,6 +148,7 @@ mod tests {
             bytes,
             is_dir: false,
             hidden: false,
+            identity: None,
         }
     }
 
@@ -180,7 +183,41 @@ mod tests {
         assert_eq!(marks.items()[0].bytes, 900);
         assert!(marks.items()[0].is_dir);
         assert!(marks.items()[0].hidden, "the .cache mark is hidden");
-        assert_eq!(marks.items()[1].bytes, 0, "a path that no longer exists");
+        assert_eq!(marks.len(), 1, "a missing path loses its mark");
+        assert!(!marks.contains(&root_path.join("gone")));
+    }
+
+    #[test]
+    fn a_disappeared_mark_does_not_authorize_a_recreated_path() {
+        let root_path = Path::new("/home/tobi");
+        let mut marks = Marks::default();
+        let marked = root_path.join("notes.bin");
+        marks.toggle(target("/home/tobi/notes.bin", 100));
+        marks.refresh(root_path, &Node::directory("home"), Metric::Bytes);
+        assert!(!marks.contains(&marked));
+        marks.refresh(root_path, &tree(), Metric::Bytes);
+        assert!(marks.is_empty(), "a new entry is never marked implicitly");
+        assert!(marks.toggle(target("/home/tobi/notes.bin", 100)));
+    }
+
+    #[test]
+    fn a_replaced_entry_loses_its_mark_even_when_the_name_stays() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("notes.bin");
+        std::fs::write(&path, b"original").expect("write");
+        let mut marked = target(path.to_str().expect("text path"), 8);
+        marked.identity = Some(entry_identity(&path).expect("identity"));
+        let mut marks = Marks::default();
+        marks.toggle(marked);
+        // Keep the original alive so the filesystem cannot reuse its id.
+        std::fs::rename(&path, temp.path().join("original.bin")).expect("move");
+        std::fs::write(&path, b"replacement").expect("write");
+        let mut root = Node::directory("root");
+        root.children.push(file("notes.bin", 11));
+
+        marks.refresh(temp.path(), &root, Metric::Bytes);
+        assert!(marks.is_empty());
+        assert!(!marks.contains(&path));
     }
 
     #[test]
