@@ -1,0 +1,116 @@
+name: Windows candidate security review
+
+on:
+  push:
+    branches: [audit/windows-candidate-20261008]
+    paths:
+      - .github/workflows/security-review.yml
+      - scripts/audit-candidate.ps1
+      - scripts/audit-git-probe.rs
+      - scripts/audit-git-helper.rs
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  dependencies:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Current RustSec dependency audit
+        shell: bash
+        run: |
+          mkdir -p dist/security-review
+          audit_tool="$RUNNER_TEMP/disktree-audit-tool"
+          mkdir -p "$audit_tool"
+          curl --fail --location --retry 3 \
+            'https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-unknown-linux-gnu-v0.22.2.tgz' \
+            --output "$audit_tool/cargo-audit.tgz"
+          printf '%s  %s\n' 'ab28a1bdb54db4d5d8ad5981cf1f959410370b3d28250dbd35f6a44248620e39' "$audit_tool/cargo-audit.tgz" | sha256sum --check -
+          tar -xzf "$audit_tool/cargo-audit.tgz" -C "$audit_tool"
+          audit_exe="$(rg --files --hidden --no-ignore "$audit_tool" -g cargo-audit | head -n 1)"
+          test -n "$audit_exe"
+          "$audit_exe" --version
+          git clone --depth 1 https://github.com/RustSec/advisory-db "$audit_tool/advisory-db"
+          git -C "$audit_tool/advisory-db" rev-parse HEAD > dist/security-review/rustsec-revision.txt
+          set +e
+          "$audit_exe" audit --db "$audit_tool/advisory-db" --no-fetch --json --file Cargo.lock > dist/security-review/cargo-audit.json
+          audit_result=$?
+          set -e
+          printf '%s\n' "$audit_result" > dist/security-review/cargo-audit-exit.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path("dist/security-review/cargo-audit.json").read_text())
+          print(json.dumps(result, indent=2))
+          PY
+          exit "$audit_result"
+      - name: Resolve Windows build dependencies without compiling the app
+        shell: bash
+        run: |
+          rustup toolchain install 1.97 --profile minimal
+          cargo tree --locked -p disktree-app --target x86_64-pc-windows-msvc --edges normal,build --prefix none --format '{p}' > dist/security-review/windows-dependencies.txt
+          sort -u dist/security-review/windows-dependencies.txt | wc -l
+          rg '^(instant|paste|rustls-pemfile|rustybuzz|ttf-parser) ' dist/security-review/windows-dependencies.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: dependency-security-review
+          path: dist/security-review/
+          if-no-files-found: error
+          retention-days: 14
+
+  candidate:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: 11564533643
+          run-id: 37808619702
+          github-token: ${{ github.token }}
+          path: candidate-download
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: 11564164100
+          run-id: 37808619702
+          github-token: ${{ github.token }}
+          path: candidate-evidence
+          merge-multiple: true
+      - name: Inspect checksums, provenance, ZIP entries, signature and PE
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist/security-review | Out-Null
+          ./scripts/audit-candidate.ps1
+      - name: Reproduce adjacent Git helper execution in an inert fixture
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.97 --profile minimal
+          $probeDir = Join-Path $env:GITHUB_WORKSPACE 'dist/security-review/probe'
+          New-Item -ItemType Directory -Path $probeDir | Out-Null
+          rustc +1.97 --edition 2024 scripts/audit-git-probe.rs -o (Join-Path $probeDir 'probe.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'Could not compile the source-module probe.' }
+          rustc +1.97 --edition 2024 scripts/audit-git-helper.rs -o (Join-Path $probeDir 'git.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'Could not compile the inert helper fixture.' }
+          $env:AUDIT_HELPER_MARKER = Join-Path $env:GITHUB_WORKSPACE 'dist/security-review/helper-marker.txt'
+          & (Join-Path $probeDir 'probe.exe') (Join-Path $probeDir 'checkout') |
+            Tee-Object -FilePath dist/security-review/git-probe.txt
+          if ($LASTEXITCODE -ne 0) { throw 'The helper-lookup reproduction did not complete.' }
+          Get-Content -LiteralPath $env:AUDIT_HELPER_MARKER
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: candidate-security-review
+          path: |
+            dist/security-review/*.txt
+            dist/security-review/*.json
+          if-no-files-found: error
+          retention-days: 14
