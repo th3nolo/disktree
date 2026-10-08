@@ -96,6 +96,19 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Reject an adjacent Git executable
+        shell: pwsh
+        run: ./scripts/check-windows-git.ps1
+
+      - name: Upload Git helper regression evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-git-helper-regression
+          path: dist/windows-git-regression/
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Lint
         run: cargo xtask lint
 
