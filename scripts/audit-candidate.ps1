@@ -61,14 +61,14 @@ if ($provenance.source_commit -ne $source -or
     $validation.help_exit_code -ne 0) {
     throw 'Candidate and validation evidence disagree.'
 }
+Copy-Item -LiteralPath (Join-Path $evidence 'validation.json') -Destination $output
+Copy-Item -LiteralPath (Join-Path $payload 'BUILD-PROVENANCE.json') -Destination $output
 $lockHash = (Get-FileHash -LiteralPath 'Cargo.lock' -Algorithm SHA256).Hash.ToLowerInvariant()
 $scriptHash = (Get-FileHash -LiteralPath 'scripts/validate-windows.ps1' -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($provenance.cargo_lock_sha256 -ne $lockHash -or
     $provenance.validation_script_sha256 -ne $scriptHash) {
     throw 'The reviewed lockfile or original validator differs from build evidence.'
 }
-Copy-Item -LiteralPath (Join-Path $evidence 'validation.json') -Destination $output
-Copy-Item -LiteralPath (Join-Path $payload 'BUILD-PROVENANCE.json') -Destination $output
 
 $bytes = [IO.File]::ReadAllBytes($exe)
 if ($bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) { throw 'Missing DOS signature.' }

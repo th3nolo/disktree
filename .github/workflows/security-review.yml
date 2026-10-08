@@ -32,7 +32,7 @@ jobs:
             --output "$audit_tool/cargo-audit.tgz"
           printf '%s  %s\n' 'ab28a1bdb54db4d5d8ad5981cf1f959410370b3d28250dbd35f6a44248620e39' "$audit_tool/cargo-audit.tgz" | sha256sum --check -
           tar -xzf "$audit_tool/cargo-audit.tgz" -C "$audit_tool"
-          audit_exe="$(rg --files --hidden --no-ignore "$audit_tool" -g cargo-audit | head -n 1)"
+          audit_exe="$(find "$audit_tool" -type f -name cargo-audit -print -quit)"
           test -n "$audit_exe"
           "$audit_exe" --version
           git clone --depth 1 https://github.com/RustSec/advisory-db "$audit_tool/advisory-db"
@@ -55,7 +55,7 @@ jobs:
           rustup toolchain install 1.97 --profile minimal
           cargo tree --locked -p disktree-app --target x86_64-pc-windows-msvc --edges normal,build --prefix none --format '{p}' > dist/security-review/windows-dependencies.txt
           sort -u dist/security-review/windows-dependencies.txt | wc -l
-          rg '^(instant|paste|rustls-pemfile|rustybuzz|ttf-parser) ' dist/security-review/windows-dependencies.txt
+          grep -E '^(instant|paste|rustls-pemfile|rustybuzz|ttf-parser) ' dist/security-review/windows-dependencies.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
@@ -68,6 +68,7 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 15
     steps:
+      - run: git config --global core.autocrlf false
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
