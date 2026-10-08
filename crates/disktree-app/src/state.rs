@@ -639,14 +639,19 @@ impl Disktree {
         self.scan_root.clone_from(&above);
         self.scan_root_snapshot = RootSnapshot::capture(&above);
         self.remember();
-        let known = Known {
-            path: self.root_path.clone(),
-            tree,
-        };
+        // A wider scan cannot reuse a tree whose root was replaced.
+        let known = self
+            .root_snapshot
+            .as_ref()
+            .filter(|saved| saved.matches(&self.root_path))
+            .map(|_| Known {
+                path: self.root_path.clone(),
+                tree,
+            });
         self.scan = Some(ScanHandle::spawn_with(
             above,
             self.options.clone(),
-            Some(known),
+            known,
         ));
         Self::poll_scan(epoch, cx);
         cx.notify();

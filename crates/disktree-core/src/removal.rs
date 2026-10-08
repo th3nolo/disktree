@@ -2456,11 +2456,8 @@ mod tests {
             fs::create_dir(&root).expect("mkdir");
             fs::create_dir(&keep).expect("mkdir");
             fs::write(root.join("precious.bin"), b"original").expect("write");
-            fs::hard_link(
-                root.join("precious.bin"),
-                keep.join("precious.bin"),
-            )
-            .expect("same file in both roots");
+            fs::hard_link(root.join("precious.bin"), keep.join("precious.bin"))
+                .expect("same file in both roots");
             let plan = plan(&[target(&root.join("precious.bin"), 8)], &root);
             assert_eq!(plan.targets.len(), 1);
             fs::rename(&root, temp.path().join("original")).expect("move");
@@ -2469,7 +2466,10 @@ mod tests {
             let outcomes = run_outcomes(&plan, mode);
             assert_eq!(outcomes.len(), 1);
             let error = outcomes[0].as_ref().expect_err("root refused");
-            assert!(error.contains("scanned root") || error.contains("through a link"));
+            assert!(
+                error.contains("scanned root")
+                    || error.contains("through a link")
+            );
             assert_eq!(
                 fs::read(keep.join("precious.bin")).expect("read"),
                 b"original"
@@ -2527,13 +2527,16 @@ mod tests {
             &sender,
         );
         drop(sender);
-        let outcomes: Vec<_> = receiver.into_iter().filter_map(|event| {
-            if let RemovalEvent::Item { outcome, .. } = event {
-                Some(outcome)
-            } else {
-                None
-            }
-        }).collect();
+        let outcomes: Vec<_> = receiver
+            .into_iter()
+            .filter_map(|event| {
+                if let RemovalEvent::Item { outcome, .. } = event {
+                    Some(outcome)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         assert_eq!(outcomes, [Ok(())]);
         assert!(!path.exists());
