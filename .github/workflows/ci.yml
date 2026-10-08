@@ -78,6 +78,9 @@ jobs:
   windows:
     name: Lint and test (Windows)
     runs-on: windows-2025
+    env:
+      # Match the portable release's C runtime linkage for this candidate.
+      RUSTFLAGS: -C target-feature=+crt-static
     steps:
       # Check out with the repository's own line endings, as on Linux.
       - run: git config --global core.autocrlf false
@@ -116,6 +119,38 @@ jobs:
           if ([ExecutableIcons]::ExtractIconEx($exe, -1, $null, $null, 0) -lt 1) {
             throw "disktree.exe has no embedded icon"
           }
+
+      - name: Validate Windows candidate
+        id: candidate
+        shell: pwsh
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: >-
+          ./scripts/validate-windows.ps1
+          -ExecutablePath target/release/disktree.exe
+          -OutputDirectory dist/windows-validation
+
+      # Evidence survives a failed scan; executables do not.
+      - name: Upload Windows validation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-validation-evidence
+          path: dist/windows-validation/evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload verified Windows candidate
+        if: success() && steps.candidate.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-candidate
+          path: |
+            dist/windows-validation/*.zip
+            dist/windows-validation/*.sha256
+          if-no-files-found: error
+          retention-days: 14
 
   # The other half of each release: the same tests on the architectures
   # the release builds for but the jobs above do not run on.

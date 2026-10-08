@@ -14,8 +14,8 @@ use disktree_core::access::file_table_readable;
 use disktree_core::filter::{Keep, Matches, filter};
 use disktree_core::insights::{Candidate, worth_a_look};
 use disktree_core::removal::{
-    Plan, RemovalEvent, RemovalHandle, RemovalMode, Target, TrashBackend,
-    detect_trash_backend, plan,
+    Plan, RemovalEvent, RemovalHandle, RemovalMode, RootSnapshot, Target,
+    TrashBackend, detect_trash_backend, entry_identity, plan_from_scan,
 };
 use disktree_core::scan::{Known, ScanHandle, ScanOptions, ScanSnapshot};
 use disktree_core::space::{
@@ -325,6 +325,8 @@ pub struct RunSummary {
 pub struct Disktree {
     /// The directory the tree was scanned from.
     pub root_path: PathBuf,
+    root_snapshot: Option<RootSnapshot>,
+    scan_root_snapshot: Option<RootSnapshot>,
     pub home: Option<PathBuf>,
     pub options: ScanOptions,
     pub power_choice: Option<crate::power::PowerEfficiency>,
@@ -469,6 +471,8 @@ impl Disktree {
         let trash_backend = detect_trash_backend();
         let mut tree = Self {
             root_path,
+            root_snapshot: None,
+            scan_root_snapshot: None,
             home,
             options,
             power_choice: None,
@@ -586,6 +590,7 @@ impl Disktree {
             scan.cancel();
         }
         app.scan_epoch += 1;
+        app.root_snapshot.clone_from(&app.scan_root_snapshot);
         app.marks.refresh(&app.root_path, &tree, app.options.metric);
         app.tree = Some(Arc::new(tree));
         app.cache = None;
@@ -632,16 +637,19 @@ impl Disktree {
         self.scan_started = Some(Instant::now());
         self.scan_elapsed = None;
         self.scan_root.clone_from(&above);
+        self.scan_root_snapshot = RootSnapshot::capture(&above);
         self.remember();
-        let known = Known {
-            path: self.root_path.clone(),
-            tree,
-        };
-        self.scan = Some(ScanHandle::spawn_with(
-            above,
-            self.options.clone(),
-            Some(known),
-        ));
+        // A wider scan cannot reuse a tree whose root was replaced.
+        let known = self
+            .root_snapshot
+            .as_ref()
+            .filter(|saved| saved.matches(&self.root_path))
+            .map(|_| Known {
+                path: self.root_path.clone(),
+                tree,
+            });
+        self.scan =
+            Some(ScanHandle::spawn_with(above, self.options.clone(), known));
         Self::poll_scan(epoch, cx);
         cx.notify();
     }
@@ -940,6 +948,8 @@ impl Disktree {
         self.scan_started = Some(Instant::now());
         self.scan_elapsed = None;
         self.scan_root.clone_from(&self.root_path);
+        self.root_snapshot = None;
+        self.scan_root_snapshot = RootSnapshot::capture(&self.root_path);
         self.scan = Some(ScanHandle::spawn(
             self.root_path.clone(),
             self.options.clone(),
@@ -986,6 +996,11 @@ impl Disktree {
         };
         match outcome {
             Ok(node) => {
+                self.root_snapshot = self
+                    .scan_root_snapshot
+                    .as_ref()
+                    .filter(|saved| saved.matches(&self.scan_root))
+                    .cloned();
                 // A widening scan lands on a new root: move the view up to it,
                 // with the directory it came from selected.
                 let came_from = (self.scan_root != self.root_path)
@@ -1092,7 +1107,7 @@ impl Disktree {
 
     pub fn path_at(&self, crumbs: &[usize]) -> Option<PathBuf> {
         let tree = self.tree.as_ref()?;
-        Some(path_of(&self.root_path, tree, crumbs))
+        path_of(&self.root_path, tree, crumbs)
     }
 
     /// Path of the directory currently drawn.
@@ -1686,6 +1701,13 @@ impl Disktree {
         cx: &mut Context<'_, Self>,
     ) {
         let Some(target) = self.target_at(crumbs) else {
+            self.notice = Some((
+                "This path cannot be verified safely; rescan or use the \
+                 file manager for names shown with replacement characters."
+                    .into(),
+                Status::Warning,
+            ));
+            cx.notify();
             return;
         };
         self.notice = None;
@@ -1746,7 +1768,9 @@ impl Disktree {
     pub fn target_at(&self, crumbs: &[usize]) -> Option<Target> {
         let node = self.node_at(crumbs)?;
         let path = self.path_at(crumbs)?;
+        let identity = entry_identity(&path)?;
         Some(Target {
+            identity: Some(identity),
             hidden: is_hidden(&path),
             path,
             bytes: node.value(self.options.metric),
@@ -1767,7 +1791,11 @@ impl Disktree {
 
     /// The plan the review screen shows and the removal runs.
     pub fn plan(&self) -> Plan {
-        plan(self.marks.items(), &self.root_path)
+        plan_from_scan(
+            self.marks.items(),
+            &self.root_path,
+            self.root_snapshot.as_ref(),
+        )
     }
 
     // ── layout and hit-testing ──────────────────────────────────────────

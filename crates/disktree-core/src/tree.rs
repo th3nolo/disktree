@@ -1,7 +1,7 @@
 //! The scanned tree.
 
 use std::num::NonZeroU64;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex, OnceLock};
 
@@ -404,19 +404,30 @@ fn aggregate_at(
 }
 
 /// Absolute path of the node at `crumbs` beneath a scanned root.
-pub fn path_of(root_path: &Path, root: &Node, crumbs: &[usize]) -> PathBuf {
+pub fn path_of(
+    root_path: &Path,
+    root: &Node,
+    crumbs: &[usize],
+) -> Option<PathBuf> {
+    if !crate::removal::addressable(root_path) {
+        return None;
+    }
     let mut path = root_path.to_path_buf();
     let mut node = root;
     for &index in crumbs {
-        match node.children.get(index) {
-            Some(child) => {
-                path.push(&*child.name);
-                node = child;
-            }
-            None => break,
+        let child = node.children.get(index)?;
+        let name = Path::new(&*child.name);
+        let mut components = name.components();
+        if !crate::removal::addressable(name)
+            || !matches!(components.next(), Some(Component::Normal(_)))
+            || components.next().is_some()
+        {
+            return None;
         }
+        path.push(name);
+        node = child;
     }
-    path
+    Some(path)
 }
 
 #[cfg(test)]
@@ -544,7 +555,27 @@ mod tests {
         root.children.push(nested);
 
         let path = path_of(Path::new("/home/tobi"), &root, &[0, 0]);
-        assert_eq!(path, PathBuf::from("/home/tobi/child/deep"));
+        assert_eq!(path, Some(PathBuf::from("/home/tobi/child/deep")));
+    }
+
+    #[test]
+    fn a_lossy_name_or_invalid_crumb_never_becomes_an_actionable_path() {
+        let mut root = Node::directory("root");
+        let mut ambiguous = Node::directory("bad\u{fffd}");
+        ambiguous.children.push(leaf("precious.bin", 1));
+        root.children.push(ambiguous);
+        root.children.push(leaf("normal", 1));
+        let path = Path::new("/home/tobi");
+
+        assert_eq!(path_of(path, &root, &[0]), None);
+        assert_eq!(path_of(path, &root, &[0, 0]), None);
+        assert_eq!(path_of(path, &root, &[1, 0]), None);
+        assert_eq!(path_of(path, &root, &[2]), None);
+        assert_eq!(path_of(path, &root, &[1]), Some(path.join("normal")));
+        for name in ["..", ".", "", "parent/child", "/elsewhere"] {
+            root.children[1].name = name.into();
+            assert_eq!(path_of(path, &root, &[1]), None, "{name}");
+        }
     }
 
     #[test]

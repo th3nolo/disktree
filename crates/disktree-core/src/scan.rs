@@ -1598,6 +1598,36 @@ mod tests {
     }
 
     #[test]
+    // APFS refuses invalid UTF-8 at creation; these filesystems accept it.
+    #[cfg(any(target_os = "linux", windows))]
+    fn colliding_lossy_names_are_measured_but_never_addressed() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path().canonicalize().expect("canonical");
+        #[cfg(unix)]
+        let raw = {
+            use std::os::unix::ffi::OsStringExt as _;
+            std::ffi::OsString::from_vec(vec![b'b', b'a', b'd', 0xff])
+        };
+        #[cfg(windows)]
+        let raw = {
+            use std::os::windows::ffi::OsStringExt as _;
+            std::ffi::OsString::from_wide(&[0x62, 0x61, 0x64, 0xd800])
+        };
+        let literal = root.join("bad\u{fffd}");
+        fs::write(root.join(raw), b"raw").expect("write");
+        fs::write(&literal, b"literal").expect("write");
+        let tree = scan_dir(&root, &options());
+
+        assert_eq!(tree.files, 2);
+        assert_eq!(tree.bytes, 10);
+        assert_eq!(tree.children.len(), 2);
+        for index in 0..2 {
+            assert_eq!(crate::tree::path_of(&root, &tree, &[index]), None);
+        }
+        assert_eq!(fs::read(&literal).expect("read"), b"literal");
+    }
+
+    #[test]
     fn symlinks_are_not_followed_by_default() {
         let temp = TempDir::new().expect("tempdir");
         let outside = TempDir::new().expect("tempdir");

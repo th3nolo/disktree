@@ -165,6 +165,7 @@ mod tests {
             bytes,
             is_dir,
             hidden: false,
+            identity: None,
         }
     }
 
@@ -213,6 +214,7 @@ mod tests {
             bytes: 1,
             is_dir: false,
             hidden: false,
+            identity: None,
         }];
         let list = delete_list(&targets);
         assert!(list.starts_with("# left out"), "{list}");

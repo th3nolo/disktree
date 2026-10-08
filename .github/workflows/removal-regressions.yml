@@ -1,0 +1,38 @@
+name: Removal regressions
+
+on:
+  pull_request:
+    paths:
+      - "crates/disktree-core/**"
+      - "crates/disktree-app/src/marks.rs"
+      - "crates/disktree-app/src/state.rs"
+      - ".github/workflows/removal-regressions.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: removal-regressions-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: Core safety (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97"
+          components: clippy
+      # Fast feedback on filesystem guards while the full UI gate builds.
+      - name: Core lint
+        run: >-
+          cargo clippy --locked -p disktree-core --all-targets
+          --all-features -- -D warnings
+      - name: Core tests
+        run: cargo test --locked -p disktree-core
