@@ -167,11 +167,7 @@ pub fn plan_from_scan(
 ) -> Plan {
     let mut result = plan(targets, root);
     if snapshot.is_none() || result.root_snapshot.as_ref() != snapshot {
-        for target in result
-            .targets
-            .drain(..)
-            .chain(result.covered.drain(..))
-        {
+        for target in result.targets.drain(..).chain(result.covered.drain(..)) {
             result.blocked.push(Blocked {
                 path: target.path,
                 reason: "the scanned root changed or cannot be verified; \
@@ -486,9 +482,11 @@ fn refuse(
     media: &[PathBuf],
 ) -> Option<String> {
     if !addressable(path) {
-        return Some("the name cannot be represented unambiguously; \
+        return Some(
+            "the name cannot be represented unambiguously; \
                      nothing will be removed"
-            .into());
+                .into(),
+        );
     }
     let key = guard_key(path);
     let root_key = guard_key(root);
@@ -1184,9 +1182,10 @@ fn run(
                 )
             })
             .or_else(|| {
-                (!plan.root_snapshot.as_ref().is_some_and(|saved| {
-                    saved.matches(&plan.root)
-                }))
+                (!plan
+                    .root_snapshot
+                    .as_ref()
+                    .is_some_and(|saved| saved.matches(&plan.root)))
                 .then(|| {
                     "the scanned root changed or cannot be verified".into()
                 })
