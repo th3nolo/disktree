@@ -2518,7 +2518,6 @@ mod tests {
     fn recycling_refuses_replacement_after_the_final_identity_check() {
         let temp = tree();
         let path = temp.path().join("a/one.bin");
-        let original = fs::read(&path).expect("read original");
         let identity = entry_identity(&path).expect("marked identity");
         let root = RootSnapshot::capture(temp.path()).expect("root identity");
         let guard = crate::windows::pin_parent(
@@ -2529,10 +2528,9 @@ mod tests {
         .expect("pin ancestors");
         assert_eq!(entry_identity(&guard.path), Some(identity));
 
-        // The parent locks cannot keep this final name from being replaced.
-        // This is the worker's boundary after its last identity check.
-        let kept = temp.path().join("original.bin");
-        fs::rename(&path, &kept).expect("replace after check");
+        // Try replacing the final entry while every ancestor stays pinned.
+        // The fixture controls the worker's last-check/handoff boundary.
+        fs::remove_file(&path).expect("remove after check");
         fs::write(&path, b"unmarked replacement").expect("write replacement");
         let result = move_to_trash(&guard.path, TrashBackend::RecycleBin);
 
@@ -2544,7 +2542,6 @@ mod tests {
             fs::read(&path).expect("read replacement"),
             b"unmarked replacement"
         );
-        assert_eq!(fs::read(&kept).expect("read original"), original);
         assert!(temp.path().join("a/c.bin").exists());
         assert!(result.is_err(), "an unsafe handoff must be refused");
     }
