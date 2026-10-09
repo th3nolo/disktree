@@ -885,8 +885,9 @@ fn disabled_recycling_never_promotes_a_commit_to_permanent_deletion(
     update(&view, cx, |app, cx| {
         app.trash_backend = TrashBackend::RecycleBin;
         app.removal_mode = RemovalMode::Trash;
-        let crumbs =
-            app.crumbs_for_path(&temp.path().join("junk")).expect("node");
+        let crumbs = app
+            .crumbs_for_path(&temp.path().join("junk"))
+            .expect("node");
         app.toggle_mark(&crumbs, cx);
         app.screen = Screen::Review;
         cx.notify();

@@ -2221,10 +2221,8 @@ impl Disktree {
         if self.removal_mode == RemovalMode::Trash
             && !self.trash_backend.is_available()
         {
-            self.notice = Some((
-                self.trash_backend.detail().into(),
-                Status::Warning,
-            ));
+            self.notice =
+                Some((self.trash_backend.detail().into(), Status::Warning));
             cx.notify();
             return;
         }

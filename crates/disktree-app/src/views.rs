@@ -2747,9 +2747,7 @@ fn review_summary(
     );
 
     let explanation = match app.removal_mode {
-        RemovalMode::Trash if !trash => {
-            app.trash_backend.detail().to_string()
-        }
+        RemovalMode::Trash if !trash => app.trash_backend.detail().to_string(),
         RemovalMode::Trash => format!(
             "Recoverable from the trash until it is emptied. Uses {}.",
             app.trash_backend.label()

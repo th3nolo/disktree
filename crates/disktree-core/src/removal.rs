@@ -974,10 +974,7 @@ pub enum TrashBackend {
 impl TrashBackend {
     pub const fn is_available(self) -> bool {
         match self {
-            Self::MacOs
-            | Self::TrashPut
-            | Self::Gio
-            | Self::XdgHome => true,
+            Self::MacOs | Self::TrashPut | Self::Gio | Self::XdgHome => true,
             Self::RecycleBin | Self::Unavailable => false,
         }
     }
@@ -2523,12 +2520,9 @@ mod tests {
         let path = temp.path().join("a/one.bin");
         let identity = entry_identity(&path).expect("marked identity");
         let root = RootSnapshot::capture(temp.path()).expect("root identity");
-        let guard = crate::windows::pin_parent(
-            &path,
-            temp.path(),
-            Some(root.identity),
-        )
-        .expect("pin ancestors");
+        let guard =
+            crate::windows::pin_parent(&path, temp.path(), Some(root.identity))
+                .expect("pin ancestors");
         assert_eq!(entry_identity(&guard.path), Some(identity));
 
         // Try replacing the final entry while every ancestor stays pinned.
