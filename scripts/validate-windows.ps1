@@ -11,6 +11,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 # Preserve native exit codes and logs, including a positive AV detection.
 $PSNativeCommandUseErrorActionPreference = $false
+. (Join-Path $PSScriptRoot 'windows-pe.ps1')
 $workRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 
 function Get-WorkspacePath([string] $name) {
@@ -63,6 +64,7 @@ $report = [ordered]@{
     archive_scan_exit_code = $null
     help_exit_code = $null
     imports = 'unavailable'
+    pe_mitigations = $null
     error = $null
 }
 
@@ -79,6 +81,12 @@ try {
     if ((Get-Sha256 $built) -ne $exeHash) {
         throw 'The candidate differs from the built executable.'
     }
+
+    $mitigations = Get-WindowsPeMitigations -LiteralPath $exe
+    $report.pe_mitigations = $mitigations
+    $mitigations | ConvertTo-Json | Set-Content -LiteralPath (
+        Join-Path $evidence 'pe-mitigations.json'
+    ) -Encoding utf8
 
     Invoke-LoggedNative rustc @('--version', '--verbose') (
         Join-Path $evidence 'rustc.txt'
@@ -114,6 +122,10 @@ try {
         ) -Raw
         cargo_lock_sha256 = Get-Sha256 (Join-Path $workRoot 'Cargo.lock')
         validation_script_sha256 = Get-Sha256 $PSCommandPath
+        mitigation_script_sha256 = Get-Sha256 (
+            Join-Path $PSScriptRoot 'windows-pe.ps1'
+        )
+        pe_mitigations = $mitigations
         executable_sha256 = $exeHash
         authenticode_status = $signature.Status.ToString()
         cryptographic_attestation = $false

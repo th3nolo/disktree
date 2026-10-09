@@ -10,6 +10,35 @@ and the Git subprocess boundary refuse it; the panel says **status
 disabled**. Check repository changes, stashes and unpushed commits
 separately before deciding to remove a checkout.
 
+## Build hardening
+
+Windows CI and release builds enable `-C control-flow-guard=yes` alongside
+static C runtime linkage. Candidate validation inspects PE metadata before
+the Defender scan or startup check. It requires CFG, ASLR, high-entropy ASLR,
+DEP, CFG instrumentation flags and a nonempty function table whose bytes
+fit the image. Missing or malformed metadata fails the candidate gate.
+The evidence includes `pe-mitigations.json`; provenance includes the
+mitigation checker hash and observed metadata.
+
+CI compiles an inert indirect-call fixture with CFG disabled and enabled:
+the first must be refused and the second accepted. Corrupted flag,
+instrumentation, function-table and truncated-image variants must also
+be refused. These fixtures are inspected without being executed.
+Passing metadata checks do not prove that every prebuilt or native
+dependency is instrumented, or that CFG prevents every memory error.
+
+All third-party actions in CI, removal regression and release workflows
+are pinned to the exact revisions recorded by successful main CI run
+[37816805710](https://github.com/th3nolo/disktree/actions/runs/37816805710).
+Changing a version now requires changing its reviewed commit SHA; the
+toolchain version remains 1.97. Pinning does not make an action or a
+dependency trustworthy by itself, and hosted runner images still update.
+
+This closes the CFG and mutable-action-reference gaps recorded in the
+[October 8 review](https://github.com/th3nolo/disktree/blob/e63c66805c34df2e7f05a47bff01c4a2ac29b3a2/docs/security-review-2026-10-08.md).
+The Recycle Bin target replacement window, publisher signing, native
+desktop checks and Windows 10 compatibility remain separate.
+
 ## Adjacent Git executable regression
 
 Before the Windows lint and test gates, CI compiles the application's exact
