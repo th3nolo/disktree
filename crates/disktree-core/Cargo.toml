@@ -19,8 +19,6 @@ rustc-hash = { workspace = true }
 rustix = { version = "1.1", features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
-# The Recycle Bin, through the shell's own file operation.
-trash = { version = "5.2.9", default-features = false, features = ["coinit_apartmentthreaded"] }
 winapi-util = "0.1.11"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",

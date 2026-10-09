@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use disktree_core::removal::{RemovalMode, entry_identity};
+use disktree_core::removal::{RemovalMode, TrashBackend, entry_identity};
 use disktree_core::scan::{ScanOptions, scan};
 use disktree_core::space::{SpaceInfo, Volume};
 use disktree_core::treemap::Tile;
@@ -866,11 +866,56 @@ fn the_trash_is_the_default_when_there_is_one(cx: &mut TestAppContext) {
     let (mode, available) = read(&view, cx, |app| {
         (app.removal_mode, app.trash_backend.is_available())
     });
-    if available {
+    if available || cfg!(windows) {
         assert_eq!(mode, RemovalMode::Trash);
     } else {
         assert_eq!(mode, RemovalMode::Permanent);
     }
+}
+
+/// A disabled trash stays blocked through keys; choosing permanent deletion
+/// still opens a cancellable confirmation rather than starting a worker.
+#[gpui_kit::test]
+fn disabled_recycling_never_promotes_a_commit_to_permanent_deletion(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.trash_backend = TrashBackend::RecycleBin;
+        app.removal_mode = RemovalMode::Trash;
+        let crumbs =
+            app.crumbs_for_path(&temp.path().join("junk")).expect("node");
+        app.toggle_mark(&crumbs, cx);
+        app.screen = Screen::Review;
+        cx.notify();
+    });
+    draw(cx);
+
+    press(cx, "enter");
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+    assert_eq!(read(&view, cx, |app| app.removal_mode), RemovalMode::Trash);
+    assert!(!read(&view, cx, |app| app.confirm_open));
+    assert!(read(&view, cx, |app| app.run.is_none()));
+    assert_eq!(read(&view, cx, |app| app.marks.len()), 1);
+    assert!(read(&view, cx, |app| {
+        app.notice
+            .as_ref()
+            .is_some_and(|(text, _)| text.contains("Recycling is disabled"))
+    }));
+
+    press(cx, "p");
+    press(cx, "enter");
+    assert!(read(&view, cx, |app| app.confirm_open));
+    assert!(read(&view, cx, |app| app.run.is_none()));
+    assert!(temp.path().join("junk/blob.bin").exists());
+    press(cx, "escape");
+    assert!(!read(&view, cx, |app| app.confirm_open));
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+    assert!(read(&view, cx, |app| app.run.is_none()));
+    assert!(temp.path().join("junk/blob.bin").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
 }
 
 /// `ctrl =` / `ctrl -` / `ctrl 0` change the window's rem, which every size

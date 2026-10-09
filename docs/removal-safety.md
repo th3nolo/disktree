@@ -28,12 +28,18 @@ root retargeting, replaced entries, missing marks, lossy names, parent locks,
 links, and read-only files. Validation uses the repository's unchanged
 `cargo xtask lint` and `cargo xtask test` gates on Windows, Linux and macOS.
 
+Windows recycling is disabled in this fork. A final identity check cannot
+bind the shell's later lookup to the marked object. Every Windows trash
+backend now returns an unsupported-operation error, including direct calls;
+there is no shell handoff or permanent-deletion fallback. The review starts
+with removal blocked until the user explicitly chooses permanent deletion,
+which still requires confirmation. A recoverable identity-bound replacement
+would need a separate recovery design before recycling can return.
+
 Limits: a filesystem identity binds an object, not its contents. Another
 process can change files inside a marked directory before deletion. The
-Recycle Bin uses Windows' path-based shell API: pinned ancestors and a final
-identity check reduce redirection risk, but this is not a handle-based,
-race-free trash implementation. No claim is made that concurrent hostile
-mutation is fully isolated on every supported platform.
+Linux and macOS trash backends are unchanged; no claim is made that
+concurrent hostile mutation is fully isolated on every supported platform.
 
 Antivirus reports for upstream release binaries remain unresolved by these
 source changes. No upstream executable was run on the user's PC. A clean

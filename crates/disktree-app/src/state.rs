@@ -503,12 +503,12 @@ impl Disktree {
             treemap_origin: Rc::new(Cell::new(Point::new(px(0.), px(0.)))),
             treemap_size: Rc::new(Cell::new(size(px(0.), px(0.)))),
             marks: Marks::default(),
-            // Reversible by default whenever this machine has a trash: the
-            // permanent path stays one choice away, behind a dialog.
-            removal_mode: if trash_backend.is_available() {
-                RemovalMode::Trash
-            } else {
+            // Disabled Windows recycling must not make permanent deletion
+            // the default. It requires a deliberate mode change and dialog.
+            removal_mode: if trash_backend == TrashBackend::Unavailable {
                 RemovalMode::Permanent
+            } else {
+                RemovalMode::Trash
             },
             trash_backend,
             confirm_open: false,
@@ -2213,6 +2213,18 @@ impl Disktree {
         let plan = self.plan();
         if plan.is_empty() {
             self.notice = Some(("nothing is marked".into(), Status::Warning));
+            cx.notify();
+            return;
+        }
+        // Keyboard commits and direct callers must obey the same refusal as
+        // the disabled button, without falling back to permanent deletion.
+        if self.removal_mode == RemovalMode::Trash
+            && !self.trash_backend.is_available()
+        {
+            self.notice = Some((
+                self.trash_backend.detail().into(),
+                Status::Warning,
+            ));
             cx.notify();
             return;
         }

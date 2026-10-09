@@ -36,8 +36,9 @@ dependency trustworthy by itself, and hosted runner images still update.
 
 This closes the CFG and mutable-action-reference gaps recorded in the
 [October 8 review](https://github.com/th3nolo/disktree/blob/e63c66805c34df2e7f05a47bff01c4a2ac29b3a2/docs/security-review-2026-10-08.md).
-The Recycle Bin target replacement window, publisher signing, native
-desktop checks and Windows 10 compatibility remain separate.
+Windows recycling now fails closed instead of exposing the Recycle Bin
+target replacement window. Publisher signing, native desktop checks and
+Windows 10 compatibility remain separate.
 
 ## Adjacent Git executable regression
 
@@ -127,10 +128,12 @@ Open the candidate with `$scanRoot` as its path and check:
 
 1. Scanning, navigation, and a cancelled confirmation leave both files and
    the outside sentinel intact.
-2. Recycling `marked.txt` removes only that file and permits restoring it
-   from the Recycle Bin. Record the restored contents.
-3. Permanent deletion asks for confirmation and leaves `neighbour.txt`
-   and the outside sentinel intact.
+2. Review starts with recycling disabled. Enter must leave every file
+   intact. Choose permanent deletion explicitly, open its confirmation,
+   and cancel; every file must still be intact.
+3. After choosing permanent deletion explicitly, confirm removal of
+   `marked.txt`. Only that file is removed; `neighbour.txt` and the outside
+   sentinel remain intact.
 4. After marking a file, rename it and create a new file at the old path.
    Refresh must drop the mark; the new occupant must survive.
 5. Select a directory containing `.git`. The panel must say **status
@@ -144,5 +147,5 @@ filesystem, and observed results. Windows 10 compatibility and a real
 desktop GPU remain unverified until recorded; hosted Windows Server CI
 does not substitute for them.
 
-See [removal-safety.md](removal-safety.md) for the Recycle Bin concurrency
-limit and the difference between object identity and immutable contents.
+See [removal-safety.md](removal-safety.md) for the Windows recycling refusal
+and the difference between object identity and immutable contents.
