@@ -2512,6 +2512,43 @@ mod tests {
         assert!(temp.path().join("a/c.bin").exists());
     }
 
+    /// Control the last-check/shell-handoff schedule without a timing race.
+    #[test]
+    #[cfg(windows)]
+    fn recycling_refuses_replacement_after_the_final_identity_check() {
+        let temp = tree();
+        let path = temp.path().join("a/one.bin");
+        let original = fs::read(&path).expect("read original");
+        let identity = entry_identity(&path).expect("marked identity");
+        let root = RootSnapshot::capture(temp.path()).expect("root identity");
+        let guard = crate::windows::pin_parent(
+            &path,
+            temp.path(),
+            Some(root.identity),
+        )
+        .expect("pin ancestors");
+        assert_eq!(entry_identity(&guard.path), Some(identity));
+
+        // The parent locks cannot keep this final name from being replaced.
+        // This is the worker's boundary after its last identity check.
+        let kept = temp.path().join("original.bin");
+        fs::rename(&path, &kept).expect("replace after check");
+        fs::write(&path, b"unmarked replacement").expect("write replacement");
+        let result = move_to_trash(&guard.path, TrashBackend::RecycleBin);
+
+        assert!(
+            path.exists(),
+            "the shell removed the unmarked replacement: {result:?}"
+        );
+        assert_eq!(
+            fs::read(&path).expect("read replacement"),
+            b"unmarked replacement"
+        );
+        assert_eq!(fs::read(&kept).expect("read original"), original);
+        assert!(temp.path().join("a/c.bin").exists());
+        assert!(result.is_err(), "an unsafe handoff must be refused");
+    }
+
     #[test]
     #[cfg(windows)]
     fn the_recycle_bin_accepts_a_path_with_pinned_ancestors() {
