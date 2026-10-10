@@ -408,9 +408,19 @@ fn system_tree_keys() -> &'static [(String, PathBuf)] {
         std::sync::LazyLock::new(|| {
             system_trees()
                 .into_iter()
-                .map(|tree| {
-                    let key = guard_key(&tree);
-                    (tree.display().to_string(), key)
+                .flat_map(|tree| {
+                    let name = tree.display().to_string();
+                    // A protected Windows folder can itself be a junction
+                    // or use a short name. Its resolved data stays protected.
+                    #[cfg(windows)]
+                    let real = fs::canonicalize(&tree)
+                        .ok()
+                        .map(|real| guard_key(&real));
+                    #[cfg(not(windows))]
+                    let real = None;
+                    std::iter::once(guard_key(&tree))
+                        .chain(real)
+                        .map(move |key| (name.clone(), key))
                 })
                 .collect()
         });
@@ -677,6 +687,28 @@ fn linked(
     {
         return Some("it contains the home directory".into());
     }
+    // Identity proves which object was scanned, not whether its resolved
+    // location is protected. An alias chosen as the root still needs these
+    // guards; parent-only resolution keeps a final link safe to unlink.
+    #[cfg(windows)]
+    {
+        if real_profiles_key()
+            .is_some_and(|profiles| is_profile(path, &real, profiles))
+        {
+            return Some("a user profile cannot be removed".into());
+        }
+        let real_home = home.and_then(|home| home.real.as_deref());
+        if let Some(system) = system_tree(&real, real_home) {
+            return Some(format!(
+                "part of the system under {system}: {SYSTEM_TOOLS}"
+            ));
+        }
+        if let Some(system) = system_tree_below(&real) {
+            return Some(format!(
+                "it contains {system}, which is part of the system"
+            ));
+        }
+    }
     None
 }
 
@@ -914,6 +946,20 @@ fn profiles_key() -> Option<&'static Path> {
             crate::windows::user_profiles_dir().map(|dir| guard_key(&dir))
         });
     PROFILES.as_deref()
+}
+
+/// The same profiles folder after resolving its own aliases. A scan opened
+/// through a different name must still refuse every complete profile.
+#[cfg(windows)]
+fn real_profiles_key() -> Option<&'static Path> {
+    static REAL: std::sync::LazyLock<Option<PathBuf>> =
+        std::sync::LazyLock::new(|| {
+            crate::windows::user_profiles_dir()?
+                .canonicalize()
+                .ok()
+                .map(|real| guard_key(&real))
+        });
+    REAL.as_deref()
 }
 
 #[cfg(not(windows))]
@@ -3060,6 +3106,59 @@ mod tests {
                 .contains(&windows.to_lowercase())),
             "refused as part of {windows}"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_aliases_do_not_bypass_system_tree_protection() {
+        let temp = TempDir::new().expect("tempdir");
+        let system = PathBuf::from(
+            std::env::var_os("SystemRoot").expect("Windows directory"),
+        );
+        let root = temp.path().join("system-alias");
+        link_dir(&system, &root);
+        let path = root.join("Temp");
+        assert!(path.is_dir(), "read-only Windows fixture");
+
+        // Planning only: nothing in the real Windows directory is touched.
+        let planned = plan(&[target(&path, 1)], &root);
+        assert!(
+            planned.is_empty(),
+            "an alias must not authorize system data"
+        );
+        assert_eq!(planned.blocked.len(), 1);
+        assert!(planned.blocked[0].reason.contains("system"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_aliases_do_not_bypass_profile_protection() {
+        let temp = TempDir::new().expect("tempdir");
+        let profiles =
+            crate::windows::user_profiles_dir().expect("profiles directory");
+        let root = temp.path().join("profiles-alias");
+        link_dir(&profiles, &root);
+        let path = root.join("Public");
+        assert!(path.is_dir(), "read-only public profile fixture");
+
+        // Planning only: no files are created or removed in a user profile.
+        let planned = plan(&[target(&path, 1)], &root);
+        assert!(planned.is_empty(), "an alias must not authorize a profile");
+        assert_eq!(planned.blocked.len(), 1);
+        assert!(planned.blocked[0].reason.contains("profile"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_aliases_still_allow_ordinary_scanned_directories() {
+        let temp = tree();
+        let root = temp.path().join("ordinary-alias");
+        link_dir(&temp.path().join("a"), &root);
+        let path = root.join("b");
+
+        let planned = plan(&[target(&path, 1)], &root);
+        assert_eq!(planned.targets.len(), 1);
+        assert!(planned.blocked.is_empty());
     }
 
     #[cfg(windows)]
