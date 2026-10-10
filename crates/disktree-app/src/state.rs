@@ -1,8 +1,8 @@
 //! Application state and every mutation the UI can perform.
 //!
 //! The screens in [`crate::views`] are pure functions of this state; all the
-//! decisions - what is selected, what a mark means, what a key does, when to
-//! re-scan - live here so they can be reasoned about in one place.
+//! decisions — what is selected, what a mark means, what a key does, when to
+//! re-scan — live here so they can be reasoned about in one place.
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -562,7 +562,7 @@ impl Disktree {
             .as_deref()
             .and_then(disktree_core::access::full_disk_access);
         // The disk of what is on screen, as `set_root` keeps it: `disktree
-        // /Volumes/Ext` then `g` measures that drive, like opening it with ?O.
+        // /Volumes/Ext` then `g` measures that drive, like opening it with ⌘O.
         tree.disk_root = volume_root_for(&tree.root_path);
         tree.file_table = file_table_readable(&tree.root_path);
         disktree_core::removal::prime_mount_points();
@@ -735,7 +735,7 @@ impl Disktree {
         }
         let len = self.volumes.len();
         let at = self.volume_highlight;
-        // Picker steps are �1, but wrap either way without casting the length
+        // Picker steps are ±1, but wrap either way without casting the length
         // down to a narrower type.
         let next = match step.signum() {
             1 => (at + 1) % len,
@@ -803,7 +803,7 @@ impl Disktree {
         }
     }
 
-    // �� scanning ��������������������������������������������������������
+    // ── scanning ────────────────────────────────────────────────────────
 
     /// Stop the walk in progress. A partial tree is never shown as if it
     /// were the whole one: a first scan leaves the panel saying it stopped,
@@ -1087,7 +1087,7 @@ impl Disktree {
         .detach();
     }
 
-    // �� navigation ������������������������������������������������������
+    // ── navigation ──────────────────────────────────────────────────────
 
     pub fn tree(&self) -> Option<&Node> {
         self.tree.as_deref()
@@ -1279,7 +1279,7 @@ impl Disktree {
     /// Go inside one child of the current root, so that it fills the viewport.
     ///
     /// `from` is where the child was on screen, when the caller knows it.
-    /// Make `target` - any directory below the current root - the root.
+    /// Make `target` — any directory below the current root — the root.
     ///
     /// `from` is where that directory's contents were on screen, so the
     /// transition grows them from exactly there into the full viewport.
@@ -1693,7 +1693,7 @@ impl Disktree {
     /// A mark covers everything beneath it, since removing a directory takes
     /// its contents with it: marking a directory absorbs the marks already
     /// inside it, and a path inside a marked directory cannot be marked or
-    /// kept on its own - it says which mark it goes with instead.
+    /// kept on its own — it says which mark it goes with instead.
     pub fn toggle_mark(
         &mut self,
         crumbs: &[usize],
@@ -1801,7 +1801,7 @@ impl Disktree {
         )
     }
 
-    // �� layout and hit-testing ������������������������������������������
+    // ── layout and hit-testing ──────────────────────────────────────────
 
     /// Resolve everything the mosaic needs for this frame.
     ///
@@ -2016,7 +2016,7 @@ impl Disktree {
         hit(tiles, base_x, base_y).map(|tile| tile.crumbs().to_vec())
     }
 
-    // �� view ������������������������������������������������������������
+    // ── view ────────────────────────────────────────────────────────────
 
     /// Zoom toward a point.
     ///
@@ -2133,7 +2133,7 @@ impl Disktree {
         }
     }
 
-    // �� removal ���������������������������������������������������������
+    // ── removal ─────────────────────────────────────────────────────────
 
     /// The review screen's commit: move to the trash at once, or ask first for
     /// a permanent deletion, which cannot be undone.
@@ -2416,7 +2416,7 @@ impl Disktree {
         self.filter_epoch += 1;
     }
 
-    // �� input �����������������������������������������������������������
+    // ── input ───────────────────────────────────────────────────────────
 
     /// Handle a key press.
     pub fn on_key_down(
@@ -2591,10 +2591,10 @@ impl Disktree {
             return;
         }
 
-        // ? chords belong to the menu bar (?Q, ?W, ?R) or to the system.
-        // Read as plain letters they would act twice or by surprise: ?D
-        // would re-scan with apparent sizes, ?H would hide *and* toggle.
-        // Zoom (?= ?- ?0) is handled before this, with a window in hand.
+        // ⌘ chords belong to the menu bar (⌘Q, ⌘W, ⌘R) or to the system.
+        // Read as plain letters they would act twice or by surprise: ⌘D
+        // would re-scan with apparent sizes, ⌘H would hide *and* toggle.
+        // Zoom (⌘= ⌘- ⌘0) is handled before this, with a window in hand.
         if event.keystroke.modifiers.platform {
             return;
         }
@@ -2836,7 +2836,7 @@ impl Disktree {
         );
         // Moves are delivered here even when the pointer is elsewhere in the
         // window. Outside the mosaic there is nothing to hover, and a stale
-        // tooltip would cover whatever the pointer went to - the panel's
+        // tooltip would cover whatever the pointer went to — the panel's
         // resize handle, for one.
         let area = self.treemap_size.get();
         let inside = local.x >= px(0.)
@@ -2854,7 +2854,7 @@ impl Disktree {
         let previous = self.hovered.clone();
         self.hovered = self.tile_at(local.x.as_f32(), local.y.as_f32());
         // The cursor tooltip is positioned from `pointer`, so a move *within*
-        // one tile still has to repaint - otherwise the tooltip sticks where
+        // one tile still has to repaint — otherwise the tooltip sticks where
         // the tile was first entered until the hover target changes.
         if self.hovered != previous || self.hovered.is_some() {
             cx.notify();
@@ -3229,7 +3229,7 @@ impl Render for Disktree {
         // The titlebar names the directory on screen, however it got there:
         // a key, a click, a rescan or a folder chosen from the menu.
         let title = format!(
-            "disktree � {}",
+            "disktree · {}",
             crate::marks::display_path(
                 &self.current_path(),
                 self.home.as_deref()

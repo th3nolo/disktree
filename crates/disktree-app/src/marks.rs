@@ -259,15 +259,23 @@ mod tests {
 
     #[test]
     fn refresh_never_changes_a_marks_directory_scope_from_scan_data() {
-        let root_path = Path::new("/home/tobi");
-        let marked = root_path.join(".cache");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("entry");
+        std::fs::write(&path, b"keep").expect("write");
+        let identity = entry_identity(&path).expect("identity");
+        let mut marked = target(path.to_str().expect("text path"), 4);
+        marked.identity = Some(identity);
         let mut marks = Marks::default();
-        marks.toggle(target("/home/tobi/.cache", 0));
+        marks.toggle(marked);
+        let mut root = Node::directory("root");
+        root.children.push(Node::directory("entry"));
 
-        marks.refresh(root_path, &tree());
+        marks.refresh(temp.path(), &root);
 
+        assert_eq!(entry_identity(&path), Some(identity));
         assert!(marks.is_empty());
-        assert!(!marks.contains(&marked));
+        assert!(!marks.contains(&path));
+        assert_eq!(std::fs::read(path).expect("read"), b"keep");
     }
 
     #[test]

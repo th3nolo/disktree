@@ -1,7 +1,7 @@
 //! The screens: explore, review, running and done.
 //!
 //! Each function is a pure reading of [`Disktree`], so what a screen shows is
-//! always exactly what the state says - there is no second copy of anything to
+//! always exactly what the state says — there is no second copy of anything to
 //! keep in sync.
 
 use disktree_core::classify::Category;
@@ -135,7 +135,7 @@ fn volumes_dialog(
         .flex_col()
         .gap(space::XS);
     if app.volumes_loading {
-        rows = rows.child(dialog_description("Looking for volumes.", cx));
+        rows = rows.child(dialog_description("Looking for volumes…", cx));
     } else if app.volumes.is_empty() {
         rows = rows
             .child(dialog_description("No other volume could be read.", cx));
@@ -339,7 +339,7 @@ fn delete_dialog(
         .popup(centred)
 }
 
-// �� explore �������������������������������������������������������������
+// ── explore ─────────────────────────────────────────────────────────────
 
 fn explore(
     app: &mut Disktree,
@@ -446,7 +446,7 @@ impl gpui_kit::Render for NoGhost {
     }
 }
 
-// �� top bar �������������������������������������������������������������
+// ── top bar ─────────────────────────────────────────────────────────────
 
 /// The app, what the whole scan found, and the controls that decide what
 /// is measured, on the edge they own.
@@ -473,7 +473,7 @@ fn top_bar(
 }
 
 /// The trail, from `/`. Above the scanned root, a crumb widens the scan;
-/// in the tree, it goes there, and its ? lists its siblings to jump to.
+/// in the tree, it goes there, and its ▾ lists its siblings to jump to.
 /// A deep trail keeps its first two steps and its last four.
 fn trail(app: &Disktree, theme: &Theme, cx: &Context<'_, Disktree>) -> Div {
     let steps = app.breadcrumbs();
@@ -501,7 +501,7 @@ fn trail(app: &Disktree, theme: &Theme, cx: &Context<'_, Disktree>) -> Div {
                     div()
                         .px(space::XS)
                         .text_color(theme.secondary.opacity(0.6))
-                        .child("."),
+                        .child("…"),
                 );
             }
             continue;
@@ -524,7 +524,7 @@ fn trail(app: &Disktree, theme: &Theme, cx: &Context<'_, Disktree>) -> Div {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.widen_to(path.clone(), cx);
                         })),
-                    "Scan from here � what is below is reused",
+                    "Scan from here · what is below is reused",
                 )
                 .into_any_element()
             }
@@ -550,7 +550,7 @@ fn separator_glyph(theme: &Theme) -> Div {
 }
 
 /// A crumb in the tree. Its label goes there (the current one opens the
-/// menu instead, being there already); its ? opens the sibling menu.
+/// menu instead, being there already); its ▾ opens the sibling menu.
 fn tree_crumb(
     app: &Disktree,
     theme: &Theme,
@@ -611,7 +611,7 @@ fn tree_crumb(
                         this.open_crumb_menu(&chevron_path, cx);
                     }
                 }))
-                .child("?"),
+                .child("▾"),
         );
     div()
         .flex()
@@ -1191,7 +1191,7 @@ fn power_efficiency(app: &Disktree, cx: &Context<'_, Disktree>) -> Div {
     control
 }
 
-// �� trail and legend ����������������������������������������������������
+// ── trail and legend ────────────────────────────────────────────────────
 
 /// Where you are, as a clickable trail, and what the colours mean, on one
 /// row over the mosaic.
@@ -1232,13 +1232,13 @@ fn scan_totals(app: &Disktree, theme: &Theme) -> Div {
         .text_color(theme.secondary)
         .child(div().text_color(theme.foreground).child(human_bytes(bytes)))
         .child(format!(
-            "� {} files � {} dirs",
+            "· {} files · {} dirs",
             widgets::human_count(files),
             widgets::human_count(dirs)
         ))
         .when(errors > 0, |this| {
             this.child(div().text_color(theme.warning).child(format!(
-                "� {} unreadable",
+                "· {} unreadable",
                 widgets::human_count(errors)
             )))
         })
@@ -1297,7 +1297,7 @@ fn legend(app: &Disktree, theme: &Theme, cx: &App) -> Div {
         .child(lane)
 }
 
-// �� side panel ����������������������������������������������������������
+// ── side panel ──────────────────────────────────────────────────────────
 
 /// Selection, worth a look, marked, and the disk: everything a decision
 /// needs, next to the mosaic rather than under it.
@@ -1762,7 +1762,7 @@ fn marked_section(
             if count == 0 {
                 "Marked".to_string()
             } else {
-                format!("Marked � {count}")
+                format!("Marked · {count}")
             },
             cx,
         ))
@@ -2087,7 +2087,7 @@ fn disk_section(
                         ))
                         .text_color(highlight)
                         .child(format!(
-                            " {} free",
+                            "→ {} free",
                             human_bytes(after.available)
                         )),
                 )
@@ -2209,14 +2209,14 @@ fn review_button(
                 .overflow_hidden()
                 .text_ellipsis()
                 .child(format!(
-                    "Review {count} marked � frees {}.",
+                    "Review {count} marked · frees {}…",
                     human_bytes(reclaiming)
                 )),
         )
         .child(gpui_omarchy::keycap("c", cx))
 }
 
-// �� key bar �������������������������������������������������������������
+// ── key bar ─────────────────────────────────────────────────────────────
 
 /// The keys, quietly: outlines and light labels, there when needed. The key
 /// to every other key and the scan's own numbers hold the trailing edge.
@@ -2412,7 +2412,7 @@ fn find_field(app: &Disktree, theme: &Theme) -> Div {
     // and Escape will do with it.
     let (summary, hint) = match app.matches.as_deref() {
         _ if app.finding && app.matches.is_none() => {
-            ("searching.".to_string(), "")
+            ("searching…".to_string(), "")
         }
         None => (String::new(), "type to filter"),
         Some(matches) if matches.count == 0 => {
@@ -2420,7 +2420,7 @@ fn find_field(app: &Disktree, theme: &Theme) -> Div {
         }
         Some(matches) => (
             format!(
-                "{} match{} � {}",
+                "{} match{} · {}",
                 widgets::human_count(matches.count as u64),
                 if matches.count == 1 { "" } else { "es" },
                 human_bytes(matches.bytes)
@@ -2522,7 +2522,7 @@ fn progress_estimate(files: u64) -> f32 {
     }
 }
 
-// �� review ��������������������������������������������������������������
+// ── review ──────────────────────────────────────────────────────────────
 
 fn review(
     app: &Disktree,
@@ -2983,7 +2983,7 @@ fn review_footer(app: &Disktree, theme: &Theme, cx: &App) -> Div {
         )
 }
 
-// �� running �������������������������������������������������������������
+// ── running ─────────────────────────────────────────────────────────────
 
 fn running(app: &Disktree, cx: &gpui_kit::Context<'_, Disktree>) -> Div {
     let theme = cx.omarchy().clone();
@@ -3071,7 +3071,7 @@ fn running(app: &Disktree, cx: &gpui_kit::Context<'_, Disktree>) -> Div {
                 .child(widgets::meter_row(
                     "progress",
                     format!(
-                        "{} removed � {} to free",
+                        "{} removed · {} to free",
                         summary.removed,
                         human_bytes(summary.bytes)
                     ),
@@ -3102,7 +3102,7 @@ fn running(app: &Disktree, cx: &gpui_kit::Context<'_, Disktree>) -> Div {
         )
 }
 
-// �� done ����������������������������������������������������������������
+// ── done ────────────────────────────────────────────────────────────────
 
 fn done(app: &Disktree, cx: &gpui_kit::Context<'_, Disktree>) -> Div {
     let theme = cx.omarchy().clone();
@@ -3235,7 +3235,7 @@ fn done(app: &Disktree, cx: &gpui_kit::Context<'_, Disktree>) -> Div {
         )
 }
 
-// �� shared ��������������������������������������������������������������
+// ── shared ──────────────────────────────────────────────────────────────
 
 fn screen_header(
     title: &str,
@@ -3363,7 +3363,7 @@ pub fn hover_tooltip(app: &Disktree, cx: &gpui_kit::App) -> Option<Div> {
     let crumbs = app.hovered.as_deref()?;
     let is_dir = app.node_at(crumbs)?.is_dir();
     let keys = if is_dir {
-        "space mark � enter open"
+        "space mark · enter open"
     } else {
         "space mark"
     };
@@ -3454,7 +3454,7 @@ fn node_card(
                 .text_size(text::CAPTION)
                 .text_color(theme.secondary)
                 .child(format!(
-                    "{} files � {} dirs � {} direct",
+                    "{} files · {} dirs · {} direct",
                     widgets::human_count(node.files),
                     widgets::human_count(
                         u64::from(node.dirs)

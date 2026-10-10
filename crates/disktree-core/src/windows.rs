@@ -735,7 +735,7 @@ pub fn volume_root(path: &Path) -> Option<PathBuf> {
 /// Windows has in place of `/proc/self/mounts`.
 pub fn mount_points() -> Vec<PathBuf> {
     let mut points = Vec::new();
-    // A volume GUID path, `\\?\Volume{.}\`, is 49 units with its NUL.
+    // A volume GUID path, `\\?\Volume{…}\`, is 49 units with its NUL.
     let mut volume = [0_u16; 64];
     let length = u32::try_from(volume.len()).unwrap_or(u32::MAX);
     // SAFETY: `volume` is writable for the length passed.
@@ -1387,8 +1387,8 @@ mod tests {
             Path::new(r"\\?\UNC\SERVER\share\dir")
         ));
         assert!(within(
-            Path::new(r"C:\Users\????\x"),
-            Path::new(r"c:\users\????")
+            Path::new(r"C:\Users\Олег\x"),
+            Path::new(r"c:\users\ОЛЕГ")
         ));
     }
 

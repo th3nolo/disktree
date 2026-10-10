@@ -6,10 +6,10 @@
 //!
 //! Two mechanisms are offered:
 //!
-//! * [`RemovalMode::Permanent`] - `rm -rf --one-file-system` semantics,
+//! * [`RemovalMode::Permanent`] — `rm -rf --one-file-system` semantics,
 //!   implemented here rather than by shelling out, so no path ever reaches a
 //!   shell and no filename can be misread as an option.
-//! * [`RemovalMode::Trash`] - move to the desktop trash. On macOS that is
+//! * [`RemovalMode::Trash`] — move to the desktop trash. On macOS that is
 //!   always the system Trash, through `NSFileManager`. Windows recycling is
 //!   refused because the shell cannot preserve the marked entry's identity.
 //!   Elsewhere it is `trash-put`, then `gio trash`, then a built-in XDG
@@ -177,8 +177,8 @@ impl Plan {
     /// free space meter may add to that volume's projection.
     ///
     /// [`Self::bytes`] counts every target, which is what a delete list
-    /// wants. A mark on another volume - `-X` crosses filesystems, and a
-    /// disk mounted under the root can be marked - gives its space back
+    /// wants. A mark on another volume — `-X` crosses filesystems, and a
+    /// disk mounted under the root can be marked — gives its space back
     /// there, so projecting it here would lend one disk another's bytes.
     pub const fn reclaim(&self) -> u64 {
         self.reclaim
@@ -359,8 +359,8 @@ const SYSTEM_TREES: [&str; 24] = [
 /// How the guards compare paths: lexically normalized, and where the
 /// platform has more than one spelling for a place, in one of them.
 ///
-/// macOS reaches the same directory under two names - `/Users/x` and
-/// `/System/Volumes/Data/Users/x` - and its disks ignore case by default, so
+/// macOS reaches the same directory under two names — `/Users/x` and
+/// `/System/Volumes/Data/Users/x` — and its disks ignore case by default, so
 /// `/library/caches` is `/Library/Caches`. Windows ignores case too, and
 /// `\\?\C:\` is `C:\`. A guard that compared the spelling would be passed by
 /// the other one. Only for judging: what is removed is always the path as
@@ -1382,7 +1382,7 @@ pub fn remove_permanently(path: &Path, root: &Path) -> io::Result<()> {
 /// Opened one component at a time from `root`, none of them followed if it
 /// is a symlink. The scan does not follow links, so no marked path has one
 /// between the root and itself; one that does now was put there after the
-/// scan, and following it would remove whatever it points to - a directory
+/// scan, and following it would remove whatever it points to — a directory
 /// swapped for a link to `~` would take `~/x` in place of the `/tmp/d/x`
 /// that was marked. `rm -rf` has the same race; this closes it. Links above
 /// the root are followed: they are how the user named it, and on macOS
@@ -1761,7 +1761,7 @@ pub fn trash_into(_path: &Path, _trash: &Path) -> io::Result<()> {
     ))
 }
 
-/// `name`, or `name.1`, `name.2`, . until the name is free in `dir`.
+/// `name`, or `name.1`, `name.2`, … until the name is free in `dir`.
 #[cfg(unix)]
 fn unique_name(dir: &Path, name: &str) -> (PathBuf, String) {
     let first = dir.join(name);
@@ -2048,8 +2048,8 @@ mod tests {
         }
     }
 
-    /// Marks may sit on another volume - `-X` crosses filesystems, and a
-    /// disk mounted under the root can be marked - but the meter measures
+    /// Marks may sit on another volume — `-X` crosses filesystems, and a
+    /// disk mounted under the root can be marked — but the meter measures
     /// the scanned volume, so only the marks whose bytes come back to it may
     /// be projected onto its free space.
     #[test]
@@ -2846,7 +2846,7 @@ mod tests {
     fn percent_encoding_escapes_what_the_spec_requires() {
         assert_eq!(percent_encode("/home/tobi/a b"), "/home/tobi/a%20b");
         assert_eq!(percent_encode("/a/b-c.d_e~f"), "/a/b-c.d_e~f");
-        assert_eq!(percent_encode("/a/n�w"), "/a/n%C3%A9w");
+        assert_eq!(percent_encode("/a/néw"), "/a/n%C3%A9w");
         assert_eq!(percent_encode("/a\nb"), "/a%0Ab");
     }
 
