@@ -272,3 +272,35 @@ fn deleting_a_selected_hardlink_preserves_the_outside_name_and_bytes() {
     assert!(!selected.exists());
     fixture.assert_canaries();
 }
+
+#[test]
+fn a_locked_child_is_found_before_any_sibling_is_deleted() {
+    let fixture = Fixture::new();
+    let directory = fixture.root.join("marked");
+    fs::create_dir(&directory).expect("marked directory");
+    for index in 0..8 {
+        fs::write(directory.join(format!("{index}.bin")), b"keep on failure")
+            .expect("fixture file");
+    }
+    // Lock the last entry in the filesystem's listing, so the old recursive
+    // worker deletes its preceding siblings before discovering the error.
+    let paths = fs::read_dir(&directory)
+        .expect("listing")
+        .map(|entry| entry.expect("entry").path())
+        .collect::<Vec<_>>();
+    let locked = OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(paths.last().expect("last child"))
+        .expect("exclusive lock");
+    let plan = fixture.marked(&directory);
+    assert_totals(&events(&plan, false), 0, 1);
+    drop(locked);
+    for path in &paths {
+        assert_eq!(
+            fs::read(path).expect("no sibling was deleted"),
+            b"keep on failure"
+        );
+    }
+    fixture.assert_canaries();
+}
