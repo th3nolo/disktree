@@ -73,6 +73,7 @@ fn draw(cx: &mut Window) {
 
 fn press(cx: &mut Window, keys: &str) {
     cx.simulate_keystrokes(keys);
+    cx.run_until_parked();
     draw(cx);
 }
 
@@ -339,8 +340,8 @@ fn a_permanent_deletion_asks_in_an_alert_dialog_then_removes(
         "nothing has happened yet"
     );
 
-    // Enter in the dialog is its confirm action.
-    press(cx, "enter");
+    // A deliberate chord approves the prepared list; plain Enter does not.
+    press(cx, "ctrl-enter");
     assert!(!read(&view, cx, |app| app.confirm_open));
     assert_eq!(read(&view, cx, |app| app.screen), Screen::Running);
 
@@ -377,6 +378,176 @@ fn a_permanent_deletion_asks_in_an_alert_dialog_then_removes(
         temp.path().join(".cache/blob.bin").exists(),
         "an unmarked hidden directory is untouched"
     );
+}
+
+fn mark_junk_for_review(view: &Entity<Disktree>, cx: &mut Window) {
+    update(view, cx, |app, cx| {
+        app.removal_mode = RemovalMode::Permanent;
+        let path = app.root_path.join("junk");
+        let crumbs = app.crumbs_for_path(&path).expect("junk");
+        app.toggle_mark(&crumbs, cx);
+        app.screen = Screen::Review;
+        cx.notify();
+    });
+    draw(cx);
+}
+
+#[gpui_kit::test]
+fn enter_and_its_autorepeat_never_approve_permanent_deletion(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    mark_junk_for_review(&view, cx);
+    press(cx, "enter");
+    assert!(read(&view, cx, |app| app.confirm_open));
+    for key in ["enter", "ctrl-enter", "space"] {
+        cx.simulate_event(gpui_kit::KeyDownEvent {
+            keystroke: gpui_kit::Keystroke::parse(key).expect("key"),
+            is_held: true,
+            prefer_character_input: false,
+        });
+        draw(cx);
+        assert!(read(&view, cx, |app| app.confirm_open));
+        assert!(read(&view, cx, |app| app.run.is_none()));
+    }
+    press(cx, "enter");
+    assert!(read(&view, cx, |app| app.confirm_open));
+    assert!(read(&view, cx, |app| app.run.is_none()));
+    assert!(temp.path().join("junk/blob.bin").exists());
+    press(cx, "escape");
+    assert!(!read(&view, cx, |app| app.confirm_open));
+}
+
+#[gpui_kit::test]
+fn changing_marks_behind_confirmation_cannot_expand_the_approved_list(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    mark_junk_for_review(&view, cx);
+    press(cx, "enter");
+    assert!(read(&view, cx, |app| app.confirm_open));
+    update(&view, cx, |app, cx| {
+        let keep = app
+            .crumbs_for_path(&app.root_path.join("keep"))
+            .expect("keep");
+        app.toggle_mark(&keep, cx);
+    });
+    press(cx, "ctrl-enter");
+    assert!(read(&view, cx, |app| app.run.is_none()));
+    assert!(temp.path().join("keep/notes.txt").exists());
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+#[gpui_kit::test]
+fn cancelling_preparation_discards_its_later_result(cx: &mut TestAppContext) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    mark_junk_for_review(&view, cx);
+    update(&view, cx, |app, cx| {
+        app.commit(cx);
+        assert!(app.preparing_delete);
+        app.cancel_delete(cx);
+    });
+    cx.run_until_parked();
+    draw(cx);
+    assert!(!read(&view, cx, |app| app.preparing_delete));
+    assert!(!read(&view, cx, |app| app.confirm_open));
+    assert!(read(&view, cx, |app| app.confirm_plan.is_none()));
+    assert!(read(&view, cx, |app| app.notice.is_none()));
+    assert!(read(&view, cx, |app| app.run.is_none()));
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+#[gpui_kit::test]
+fn an_unapproved_confirmation_and_direct_start_never_delete(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    mark_junk_for_review(&view, cx);
+    update(&view, cx, |app, cx| {
+        app.confirm_delete(cx);
+        app.begin_removal(cx);
+    });
+    assert!(read(&view, cx, |app| app.run.is_none()));
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+#[gpui_kit::test]
+fn repeated_confirmation_starts_only_one_worker(cx: &mut TestAppContext) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    mark_junk_for_review(&view, cx);
+    press(cx, "enter");
+    update(&view, cx, |app, cx| {
+        app.confirm_delete(cx);
+        let epoch = app.run_epoch;
+        app.confirm_delete(cx);
+        assert_eq!(app.run_epoch, epoch);
+        assert_eq!(epoch, 1);
+    });
+    let mut finished = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        finished = update(&view, cx, |app, cx| {
+            app.poll_removal_once(1, cx);
+            app.screen == Screen::Done
+        });
+        if finished {
+            break;
+        }
+    }
+    assert!(finished, "the single worker finished");
+    assert_eq!(read(&view, cx, |app| app.run_summary.removed), 1);
+    assert!(temp.path().join("keep/notes.txt").exists());
+    assert!(temp.path().join(".cache/blob.bin").exists());
+}
+
+#[cfg(windows)]
+#[gpui_kit::test]
+fn a_new_child_after_confirmation_preserves_the_failed_mark(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    mark_junk_for_review(&view, cx);
+    press(cx, "enter");
+    assert!(read(&view, cx, |app| app.confirm_open));
+    std::fs::write(temp.path().join("junk/new.bin"), b"not approved")
+        .expect("late addition");
+    press(cx, "ctrl-enter");
+    let epoch = read(&view, cx, |app| app.run_epoch);
+    let mut finished = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        finished = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if finished {
+            break;
+        }
+    }
+    assert!(finished, "worker must report refusal");
+    assert_eq!(read(&view, cx, |app| app.run_summary.failed), 1);
+    assert_eq!(read(&view, cx, |app| app.run_summary.entries), 0);
+    assert!(read(&view, cx, |app| app
+        .marks
+        .contains(&temp.path().join("junk"))));
+    assert!(temp.path().join("junk/blob.bin").exists());
+    assert_eq!(
+        std::fs::read(temp.path().join("junk/new.bin")).expect("survived"),
+        b"not approved"
+    );
+    draw(cx);
 }
 
 /// A subdivided directory keeps a band at the top for its own name, and its
