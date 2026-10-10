@@ -84,6 +84,29 @@ class ReportAuditTests(unittest.TestCase):
             self.assertEqual({p.relative_to(root).as_posix() for p in discover_sources(root)},
                              {"Model.lean", "Nested/Extra.lean"})
 
+    def test_temporary_looking_source_directory_is_not_ignored(self):
+        with tempfile.TemporaryDirectory(prefix=".audit-test-", dir=ROOT) as raw:
+            root = Path(raw).resolve()
+            self.assertEqual(root.parent, ROOT)
+            (root / ".audit-hidden").mkdir()
+            source = root / ".audit-hidden/Extra.lean"
+            source.write_text("import Std\n", encoding="utf-8")
+            self.assertEqual(discover_sources(root), [source])
+
+    @unittest.skipUnless(os.name == "posix", "symlink creation requires privileges on Windows")
+    def test_symlink_directory_cannot_hide_a_module(self):
+        with tempfile.TemporaryDirectory(prefix=".audit-test-", dir=ROOT) as raw:
+            temporary = Path(raw).resolve()
+            self.assertEqual(temporary.parent, ROOT)
+            source = temporary / "project"
+            source.mkdir()
+            outside = temporary / "outside"
+            outside.mkdir()
+            (outside / "Extra.lean").write_text("import Std\n", encoding="utf-8")
+            (source / "linked").symlink_to(outside, target_is_directory=True)
+            with self.assertRaises(RuntimeError):
+                discover_sources(source)
+
 
 @unittest.skipUnless(os.environ.get("LEAN_AUDIT_INTEGRATION") == "1", "requires pinned Lean")
 class LeanEnvironmentTests(unittest.TestCase):

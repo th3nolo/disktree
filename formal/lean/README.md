@@ -159,7 +159,7 @@ statements, critical definitions or audit infrastructure are specification
 changes requiring review: no checker can guarantee fidelity if its own
 requirements are deliberately changed together with the implementation.
 
-Eighteen audit tests cover report validation and real compiler/environment
+Twenty audit tests cover report validation and real compiler/environment
 behavior. The six integration tests require the pinned compiler and are
 enabled in CI. Twelve mutation checks first require a green baseline, then
 require a Lean error in the relevant specification module when removing each

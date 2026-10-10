@@ -147,7 +147,7 @@ theorem apply_removes_matching_selected (world : World) (entries : List Entry) (
       simp [erase, identity]
     · by_cases changed : entry.path = first.path ∧ world entry.path = some first.objectId
       · apply apply_preserves_absence (erase world first) rest entry.path
-        simp [erase, changed]
+        exact ite_eq_left changed
       · apply ih (erase world first) tail
         simpa [erase, changed] using identity
 

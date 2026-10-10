@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -14,17 +15,17 @@ INFRASTRUCTURE = {"AuditSupport.lean"}
 def discover_sources(root: Path) -> list[Path]:
     root = root.resolve()
     sources = []
-    for path in root.rglob("*.lean"):
-        relative = path.relative_to(root)
-        if ".lake" in relative.parts:
-            continue
-        if relative.as_posix() in INFRASTRUCTURE:
-            continue
-        if path.is_symlink() or any(parent.is_symlink() for parent in path.parents if parent.is_relative_to(root)):
-            raise RuntimeError(f"source symlinks are not permitted: {relative}")
-        if not path.resolve().is_relative_to(root):
-            raise RuntimeError(f"source outside project: {relative}")
-        sources.append(path)
+    for directory, subdirs, files in os.walk(root, followlinks=False):
+        subdirs[:] = [name for name in subdirs if name != ".lake"]
+        for name in [*subdirs, *files]:
+            path = Path(directory) / name
+            relative = path.relative_to(root)
+            if path.is_symlink():
+                raise RuntimeError(f"source symlinks are not permitted: {relative}")
+            if not path.resolve().is_relative_to(root):
+                raise RuntimeError(f"source outside project: {relative}")
+            if path.suffix == ".lean" and path.is_file() and relative.as_posix() not in INFRASTRUCTURE:
+                sources.append(path)
     if not sources:
         raise RuntimeError("no project modules checked")
     return sorted(sources)
