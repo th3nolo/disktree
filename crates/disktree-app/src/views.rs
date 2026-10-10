@@ -265,8 +265,13 @@ fn delete_dialog(
         ),
         targets => format!("Delete {} items permanently?", targets.len()),
     };
+    let advice = if app.trash_backend.is_available() {
+        "Move them to the trash if you might need them again."
+    } else {
+        "Cancel and keep a copy if you might need them again."
+    };
     let body = format!(
-        "This frees {}. Deleted files can\u{2019}t be recovered; move them to the trash if you might need them again.",
+        "This frees {}. Deleted files can\u{2019}t be recovered. {advice}",
         human_bytes(plan.bytes())
     );
     let confirm = cx.entity().downgrade();

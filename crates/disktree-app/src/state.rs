@@ -15,7 +15,7 @@ use disktree_core::filter::{Keep, Matches, filter};
 use disktree_core::insights::{Candidate, worth_a_look};
 use disktree_core::removal::{
     Plan, RemovalEvent, RemovalHandle, RemovalMode, RootSnapshot, Target,
-    TrashBackend, detect_trash_backend, entry_identity, plan_from_scan,
+    TrashBackend, detect_trash_backend, entry_snapshot, plan_from_scan,
 };
 use disktree_core::scan::{Known, ScanHandle, ScanOptions, ScanSnapshot};
 use disktree_core::space::{
@@ -591,7 +591,7 @@ impl Disktree {
         }
         app.scan_epoch += 1;
         app.root_snapshot.clone_from(&app.scan_root_snapshot);
-        app.marks.refresh(&app.root_path, &tree, app.options.metric);
+        app.marks.refresh(&app.root_path, &tree);
         app.tree = Some(Arc::new(tree));
         app.cache = None;
         app.refresh_insights();
@@ -1012,8 +1012,7 @@ impl Disktree {
                     self.device = device_for(&self.root_path);
                     self.file_table = file_table_readable(&self.root_path);
                 }
-                let metric = self.options.metric;
-                self.marks.refresh(&self.root_path, &node, metric);
+                self.marks.refresh(&self.root_path, &node);
                 discard(self.tree.replace(Arc::new(node)));
                 self.cache = None;
                 self.refresh_insights();
@@ -1768,13 +1767,17 @@ impl Disktree {
     pub fn target_at(&self, crumbs: &[usize]) -> Option<Target> {
         let node = self.node_at(crumbs)?;
         let path = self.path_at(crumbs)?;
-        let identity = entry_identity(&path)?;
+        let entry = entry_snapshot(&path)?;
+        // A stale file tile must never authorize recursive directory removal.
+        if entry.kind != node.kind {
+            return None;
+        }
         Some(Target {
-            identity: Some(identity),
+            identity: Some(entry.identity),
             hidden: is_hidden(&path),
             path,
-            bytes: node.value(self.options.metric),
-            is_dir: node.is_dir(),
+            bytes: node.bytes,
+            is_dir: entry.kind.is_dir(),
         })
     }
 
@@ -2092,12 +2095,8 @@ impl Disktree {
             let mut tree = (**tree).clone();
             disktree_core::tree::aggregate(&mut tree, self.options.metric);
             discard(self.tree.replace(Arc::new(tree)));
-            let metric = self.options.metric;
-            self.marks.refresh(
-                &self.root_path,
-                self.tree.as_ref().unwrap(),
-                metric,
-            );
+            self.marks
+                .refresh(&self.root_path, self.tree.as_ref().unwrap());
         }
         self.crumbs = self.crumbs_for_path(&directory).unwrap_or_default();
         self.selected = selected.and_then(|path| self.crumbs_for_path(&path));

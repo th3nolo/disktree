@@ -24,6 +24,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
+use crate::tree::NodeKind;
+
 /// One path the user asked to remove.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
@@ -38,6 +40,46 @@ pub struct Target {
 
 /// A full file id and its volume: Windows `ReFS` needs all 128 id bits.
 pub type EntryIdentity = (u64, u128);
+
+/// Identity and kind of one entry, observed without following its final link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EntrySnapshot {
+    pub identity: EntryIdentity,
+    pub kind: NodeKind,
+}
+
+/// Capture both fields from the same metadata read or opened Windows handle.
+#[cfg(unix)]
+pub fn entry_snapshot(path: &Path) -> Option<EntrySnapshot> {
+    use std::os::unix::fs::MetadataExt as _;
+    let meta = fs::symlink_metadata(path).ok()?;
+    Some(EntrySnapshot {
+        identity: (meta.dev(), u128::from(meta.ino())),
+        kind: entry_kind(&meta),
+    })
+}
+
+#[cfg(windows)]
+pub fn entry_snapshot(path: &Path) -> Option<EntrySnapshot> {
+    crate::windows::entry_snapshot(path)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub const fn entry_snapshot(_path: &Path) -> Option<EntrySnapshot> {
+    None
+}
+
+pub(crate) fn entry_kind(meta: &fs::Metadata) -> NodeKind {
+    if meta.file_type().is_symlink() {
+        NodeKind::Symlink
+    } else if meta.is_dir() {
+        NodeKind::Directory
+    } else if meta.is_file() {
+        NodeKind::File
+    } else {
+        NodeKind::Other
+    }
+}
 
 /// The directory the user actually scanned, including aliases above it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -240,7 +282,8 @@ fn plan_against(targets: &[Target], root: &Path, mounts: &MountTable) -> Plan {
 
     // A path inside another target is removed with it. Keep the outer one and
     // report the inner one so the review screen can explain the nesting.
-    accepted.sort_by(|left, right| left.path.cmp(&right.path));
+    // Order by the same key as containment, including Windows aliases.
+    accepted.sort_by_cached_key(|target| guard_key(&target.path));
     let mut outer: Vec<Target> = Vec::new();
     for target in accepted {
         if outer
@@ -646,10 +689,15 @@ pub fn addressable(path: &Path) -> bool {
 
 fn changed_entry(target: &Target) -> Option<String> {
     target.identity.and_then(|expected| {
-        (entry_identity(&target.path) != Some(expected)).then(|| {
-            "the marked entry changed or disappeared; rescan and mark again"
-                .into()
-        })
+        entry_snapshot(&target.path)
+            .is_none_or(|actual| {
+                actual.identity != expected
+                    || actual.kind.is_dir() != target.is_dir
+            })
+            .then(|| {
+                "the marked entry changed or disappeared; rescan and mark again"
+                    .into()
+            })
     })
 }
 
@@ -1269,9 +1317,11 @@ fn perform_removal(
         return Err(io::Error::other("the scanned root changed"));
     }
     match mode {
-        RemovalMode::Permanent => {
-            crate::windows::remove_guarded(&guard.path, target.identity)
-        }
+        RemovalMode::Permanent => crate::windows::remove_guarded(
+            &guard.path,
+            target.identity,
+            Some(target.is_dir),
+        ),
         RemovalMode::Trash => {
             if target.identity.is_some()
                 && entry_identity(&guard.path) != target.identity
@@ -1428,7 +1478,7 @@ pub fn remove_permanently(path: &Path, root: &Path) -> io::Result<()> {
     if !saved.matches(root) {
         return Err(io::Error::other("the scanned root changed"));
     }
-    crate::windows::remove_guarded(&guard.path, None)
+    crate::windows::remove_guarded(&guard.path, None, None)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -1761,10 +1811,49 @@ mod tests {
         Target {
             path: path.to_path_buf(),
             bytes,
-            is_dir: path.is_dir(),
+            is_dir: entry_snapshot(path)
+                .is_some_and(|entry| entry.kind.is_dir()),
             hidden: false,
             identity: entry_identity(path),
         }
+    }
+
+    #[test]
+    fn entry_snapshots_observe_the_kind_and_identity_without_following_links() {
+        let temp = tree();
+        let file = temp.path().join("a/one.bin");
+        let directory = temp.path().join("a/b");
+        let link = temp.path().join("link");
+        link_dir(&directory, &link);
+
+        for (path, kind) in [
+            (&file, NodeKind::File),
+            (&directory, NodeKind::Directory),
+            (&link, NodeKind::Symlink),
+        ] {
+            let snapshot = entry_snapshot(path).expect("snapshot");
+            assert_eq!(snapshot.kind, kind);
+            assert_eq!(Some(snapshot.identity), entry_identity(path));
+        }
+        assert_ne!(entry_identity(&link), entry_identity(&directory));
+    }
+
+    #[test]
+    fn planning_refuses_a_directory_identity_described_as_a_file() {
+        let temp = tree();
+        let directory = temp.path().join("a/b");
+        let sentinel = directory.join("unmarked.txt");
+        fs::write(&sentinel, b"keep directory contents").expect("write");
+        let mut marked = target(&directory, 23);
+        marked.is_dir = false;
+
+        let planned = plan(&[marked], temp.path());
+        assert!(planned.is_empty());
+        assert_eq!(planned.blocked.len(), 1);
+        assert_eq!(
+            fs::read(&sentinel).expect("sentinel"),
+            b"keep directory contents"
+        );
     }
 
     /// [`system_tree`] for plain paths, keyed the way [`refuse`] keys them.
@@ -1927,6 +2016,39 @@ mod tests {
         assert_eq!(plan.covered.len(), 1);
         assert_eq!(plan.covered[0].path, inner.path);
         assert_eq!(plan.bytes(), 30);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_aliases_cover_children_before_counting_bytes() {
+        let temp = TempDir::new().expect("tempdir");
+        // Expand a runner's short TEMP path before varying case or prefix.
+        let root =
+            guard_key(&temp.path().canonicalize().expect("canonical root"));
+        let outer = root.join("CaseFolder");
+        let inner = outer.join("data.bin");
+        fs::create_dir(&outer).expect("mkdir");
+        let sentinel = b"keep sentinel";
+        fs::write(&inner, sentinel).expect("write");
+        let bytes = u64::try_from(sentinel.len()).expect("bytes");
+        let cases = [
+            (root.join("casefolder"), inner.clone()),
+            (outer.clone(), inner.canonicalize().expect("verbatim child")),
+        ];
+        for (outer_alias, inner_alias) in cases {
+            assert_eq!(entry_identity(&outer_alias), entry_identity(&outer));
+            assert_eq!(entry_identity(&inner_alias), entry_identity(&inner));
+            let planned = plan(
+                &[target(&inner_alias, bytes), target(&outer_alias, bytes)],
+                &root,
+            );
+            assert!(planned.blocked.is_empty(), "{:?}", planned.blocked);
+            assert_eq!(planned.targets.len(), 1);
+            assert_eq!(planned.targets[0].path, normalize(&outer_alias));
+            assert_eq!(planned.covered.len(), 1);
+            assert_eq!(planned.bytes(), bytes);
+            assert_eq!(fs::read(&inner).expect("sentinel"), sentinel);
+        }
     }
 
     /// Marks may sit on another volume — `-X` crosses filesystems, and a

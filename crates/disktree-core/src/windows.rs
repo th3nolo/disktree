@@ -472,6 +472,19 @@ pub fn entry_identity(path: &Path) -> Option<crate::removal::EntryIdentity> {
     handle_identity(&file).ok()
 }
 
+/// A path replacement cannot mix the identity of one entry with another's kind.
+pub fn entry_snapshot(path: &Path) -> Option<crate::removal::EntrySnapshot> {
+    let file = OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .ok()?;
+    Some(crate::removal::EntrySnapshot {
+        identity: handle_identity(&file).ok()?,
+        kind: crate::removal::entry_kind(&file.metadata().ok()?),
+    })
+}
+
 /// Keep every ancestor open without sharing delete or write access. A
 /// rename or conversion to a reparse point must fail while removal uses
 /// the canonical path, including when the scanned root was named by an alias.
@@ -578,11 +591,16 @@ fn handle_identity(file: &File) -> io::Result<crate::removal::EntryIdentity> {
 pub fn remove_guarded(
     path: &Path,
     expected: Option<crate::removal::EntryIdentity>,
+    expected_directory: Option<bool>,
 ) -> io::Result<()> {
     let file = open_removal(path)?;
     let identity = handle_identity(&file)?;
     if expected.is_some_and(|expected| identity != expected) {
         return Err(io::Error::other("the marked entry changed"));
+    }
+    let kind = crate::removal::entry_kind(&file.metadata()?);
+    if expected_directory.is_some_and(|expected| kind.is_dir() != expected) {
+        return Err(io::Error::other("the marked entry kind changed"));
     }
     remove_opened(path, &file, identity.0)
 }
@@ -1225,14 +1243,33 @@ mod tests {
         let keep = temp.path().join("neighbour.bin");
         fs::write(&keep, b"keep").expect("write");
 
-        assert!(remove_guarded(&path, Some(expected)).is_err());
+        assert!(remove_guarded(&path, Some(expected), Some(false)).is_err());
         assert_eq!(fs::read(&path).expect("read"), b"replacement");
         assert!(keep.exists());
         let current = entry_identity(&path).expect("identity");
-        remove_guarded(&path, Some(current)).expect("removed");
+        remove_guarded(&path, Some(current), Some(false)).expect("removed");
         assert!(!path.exists());
         assert!(keep.exists());
         assert!(temp.path().join("original.bin").exists());
+    }
+
+    #[test]
+    fn handle_removal_refuses_directory_recursion_for_a_file_mark() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let directory = temp.path().join("marked");
+        fs::create_dir(&directory).expect("mkdir");
+        let sentinel = directory.join("unmarked.txt");
+        fs::write(&sentinel, b"keep directory contents").expect("write");
+        let identity = entry_identity(&directory).expect("identity");
+
+        let error = remove_guarded(&directory, Some(identity), Some(false))
+            .expect_err("a file mark never authorizes recursive deletion");
+        assert!(error.to_string().contains("kind changed"), "{error}");
+        assert_eq!(
+            fs::read(&sentinel).expect("sentinel"),
+            b"keep directory contents"
+        );
+        assert!(directory.exists());
     }
 
     #[test]
