@@ -32,18 +32,19 @@ bytes after both approved files are deleted. No removal guard is relaxed.
 
 ## Historical failures in comparable operations
 
-These are primary project issue records. A user report is distinguished from
-a maintainer-confirmed fix; none is evidence of a current vulnerability in
-the latest release or of the same bug in DiskTree.
+These are primary project issue records, including their follow-up comments.
+A user report is distinguished from a maintainer-confirmed fix or a withdrawn
+report; none is evidence of a current vulnerability in the latest release or
+of the same bug in DiskTree.
 
 | Record | Reported mechanism and status | Transfer to DiskTree |
 | --- | --- | --- |
 | [Steam for Linux #3671](https://github.com/ValveSoftware/steam-for-linux/issues/3671), opened 2015-01-14 | Users reported broad deletion during client recovery. The discussion identified an empty cleanup-root variable expanding a destructive wildcard to the filesystem root. Valve later stated the investigation had concluded and locked the issue as resolved. The record does not establish the exact initial trigger for every report. | Never turn an absent/empty/unverifiable root into broader authority. The Lean empty-root and empty-prefix counterexample checks use pure values, without executing a destructive shell command. Runtime guards also require the saved root identity. |
 | [BleachBit #1389](https://github.com/bleachbit/bleachbit/issues/1389), opened 2022-08-19 | Reported Windows 4.4.2 Recycle Bin cleanup following junction/directory-link contents outside the link. A maintainer posted the fix and closed the issue on 2026-02-13; linked commits explicitly stop following these links. | Tests must verify destination bytes survive, including links introduced after review. DiskTree already has owned outside canaries and junction replacement/late-link tests. Windows recycling is disabled until its identity contract is safe. |
-| [Czkawka #1187](https://github.com/qarmin/czkawka/issues/1187), opened 2024-01-15 | A Windows 6.1.0 user reported the same pathname listed twice as a duplicate, followed by losing that sole file during deduplication. The issue is closed; this review did not independently reproduce or establish its root cause. Czkawka itself is Rust software. | Memory safety does not prevent alias/selection mistakes. DiskTree folds normalized overlapping targets and tests case/verbatim aliases and hardlinks. Distinct hardlink names must not be mistaken for distinct file contents or a promise of reclaimable bytes. |
-| [Czkawka #1188](https://github.com/qarmin/czkawka/issues/1188), opened 2024-01-15 | The same user reported a symbolic-link replacement action deleting duplicates without the expected replacement links. This is a closed user report, not a root cause reproduced here. | Multi-step operations need explicit failure ordering. DiskTree does not implement this deduplication action, but its deletion errors must report partial results without claiming rollback or using a weaker fallback. |
+| [Czkawka #1187](https://github.com/qarmin/czkawka/issues/1187), opened 2024-01-15; report withdrawn 2025-12-29 | The original Windows 6.1.0 report alleged duplicate-self deletion. The maintainer pointed out different punctuation in the two paths; the reporter later confirmed two differently named folders and withdrew the allegation. This record is **not evidence of a duplicate-self deletion bug**. | Read the follow-up before treating a report as an incident. Similar-looking names still motivate explicit path/identity comparisons, independently supported by DiskTree's own alias/overlap/hardlink regressions. |
+| [Czkawka #1188](https://github.com/qarmin/czkawka/issues/1188), opened 2024-01-15 | The user reported a symbolic-link replacement action deleting duplicates without the expected links. On 2025-12-27 the maintainer said link operations now use a temporary file to check successful processing and closed the issue. This review did not reproduce the original failure or establish a particular privilege-related cause. | Multi-step operations need explicit failure ordering and checked replacement. DiskTree does not implement this deduplication action, but its deletion errors must report partial results without claiming rollback or using a weaker fallback. |
 
-The practical priorities from these records are strict authority boundaries,
+The practical priorities from the supported failure records are strict authority boundaries,
 link/alias semantics, immutable review data, and honest partial-failure
 reporting. This inference motivates the model and tests; the reports do not
 prove the complete correctness of DiskTree's implementation.
