@@ -6,10 +6,10 @@
 //!
 //! Two mechanisms are offered:
 //!
-//! * [`RemovalMode::Permanent`] — `rm -rf --one-file-system` semantics,
+//! * [`RemovalMode::Permanent`] - `rm -rf --one-file-system` semantics,
 //!   implemented here rather than by shelling out, so no path ever reaches a
 //!   shell and no filename can be misread as an option.
-//! * [`RemovalMode::Trash`] — move to the desktop trash. On macOS that is
+//! * [`RemovalMode::Trash`] - move to the desktop trash. On macOS that is
 //!   always the system Trash, through `NSFileManager`. Windows recycling is
 //!   refused because the shell cannot preserve the marked entry's identity.
 //!   Elsewhere it is `trash-put`, then `gio trash`, then a built-in XDG
@@ -23,6 +23,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
+
+use crate::tree::NodeKind;
 
 /// One path the user asked to remove.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,6 +40,46 @@ pub struct Target {
 
 /// A full file id and its volume: Windows `ReFS` needs all 128 id bits.
 pub type EntryIdentity = (u64, u128);
+
+/// Identity and kind of one entry, observed without following its final link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EntrySnapshot {
+    pub identity: EntryIdentity,
+    pub kind: NodeKind,
+}
+
+/// Capture both fields from the same metadata read or opened Windows handle.
+#[cfg(unix)]
+pub fn entry_snapshot(path: &Path) -> Option<EntrySnapshot> {
+    use std::os::unix::fs::MetadataExt as _;
+    let meta = fs::symlink_metadata(path).ok()?;
+    Some(EntrySnapshot {
+        identity: (meta.dev(), u128::from(meta.ino())),
+        kind: entry_kind(&meta),
+    })
+}
+
+#[cfg(windows)]
+pub fn entry_snapshot(path: &Path) -> Option<EntrySnapshot> {
+    crate::windows::entry_snapshot(path)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub const fn entry_snapshot(_path: &Path) -> Option<EntrySnapshot> {
+    None
+}
+
+pub(crate) fn entry_kind(meta: &fs::Metadata) -> NodeKind {
+    if meta.file_type().is_symlink() {
+        NodeKind::Symlink
+    } else if meta.is_dir() {
+        NodeKind::Directory
+    } else if meta.is_file() {
+        NodeKind::File
+    } else {
+        NodeKind::Other
+    }
+}
 
 /// The directory the user actually scanned, including aliases above it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -135,8 +177,8 @@ impl Plan {
     /// free space meter may add to that volume's projection.
     ///
     /// [`Self::bytes`] counts every target, which is what a delete list
-    /// wants. A mark on another volume — `-X` crosses filesystems, and a
-    /// disk mounted under the root can be marked — gives its space back
+    /// wants. A mark on another volume - `-X` crosses filesystems, and a
+    /// disk mounted under the root can be marked - gives its space back
     /// there, so projecting it here would lend one disk another's bytes.
     pub const fn reclaim(&self) -> u64 {
         self.reclaim
@@ -240,7 +282,8 @@ fn plan_against(targets: &[Target], root: &Path, mounts: &MountTable) -> Plan {
 
     // A path inside another target is removed with it. Keep the outer one and
     // report the inner one so the review screen can explain the nesting.
-    accepted.sort_by(|left, right| left.path.cmp(&right.path));
+    // Order by the same key as containment, including Windows aliases.
+    accepted.sort_by_cached_key(|target| guard_key(&target.path));
     let mut outer: Vec<Target> = Vec::new();
     for target in accepted {
         if outer
@@ -316,8 +359,8 @@ const SYSTEM_TREES: [&str; 24] = [
 /// How the guards compare paths: lexically normalized, and where the
 /// platform has more than one spelling for a place, in one of them.
 ///
-/// macOS reaches the same directory under two names — `/Users/x` and
-/// `/System/Volumes/Data/Users/x` — and its disks ignore case by default, so
+/// macOS reaches the same directory under two names - `/Users/x` and
+/// `/System/Volumes/Data/Users/x` - and its disks ignore case by default, so
 /// `/library/caches` is `/Library/Caches`. Windows ignores case too, and
 /// `\\?\C:\` is `C:\`. A guard that compared the spelling would be passed by
 /// the other one. Only for judging: what is removed is always the path as
@@ -646,10 +689,15 @@ pub fn addressable(path: &Path) -> bool {
 
 fn changed_entry(target: &Target) -> Option<String> {
     target.identity.and_then(|expected| {
-        (entry_identity(&target.path) != Some(expected)).then(|| {
-            "the marked entry changed or disappeared; rescan and mark again"
-                .into()
-        })
+        entry_snapshot(&target.path)
+            .is_none_or(|actual| {
+                actual.identity != expected
+                    || actual.kind.is_dir() != target.is_dir
+            })
+            .then(|| {
+                "the marked entry changed or disappeared; rescan and mark again"
+                    .into()
+            })
     })
 }
 
@@ -1269,9 +1317,11 @@ fn perform_removal(
         return Err(io::Error::other("the scanned root changed"));
     }
     match mode {
-        RemovalMode::Permanent => {
-            crate::windows::remove_guarded(&guard.path, target.identity)
-        }
+        RemovalMode::Permanent => crate::windows::remove_guarded(
+            &guard.path,
+            target.identity,
+            Some(target.is_dir),
+        ),
         RemovalMode::Trash => {
             if target.identity.is_some()
                 && entry_identity(&guard.path) != target.identity
@@ -1332,7 +1382,7 @@ pub fn remove_permanently(path: &Path, root: &Path) -> io::Result<()> {
 /// Opened one component at a time from `root`, none of them followed if it
 /// is a symlink. The scan does not follow links, so no marked path has one
 /// between the root and itself; one that does now was put there after the
-/// scan, and following it would remove whatever it points to — a directory
+/// scan, and following it would remove whatever it points to - a directory
 /// swapped for a link to `~` would take `~/x` in place of the `/tmp/d/x`
 /// that was marked. `rm -rf` has the same race; this closes it. Links above
 /// the root are followed: they are how the user named it, and on macOS
@@ -1428,7 +1478,7 @@ pub fn remove_permanently(path: &Path, root: &Path) -> io::Result<()> {
     if !saved.matches(root) {
         return Err(io::Error::other("the scanned root changed"));
     }
-    crate::windows::remove_guarded(&guard.path, None)
+    crate::windows::remove_guarded(&guard.path, None, None)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -1711,7 +1761,7 @@ pub fn trash_into(_path: &Path, _trash: &Path) -> io::Result<()> {
     ))
 }
 
-/// `name`, or `name.1`, `name.2`, … until the name is free in `dir`.
+/// `name`, or `name.1`, `name.2`, . until the name is free in `dir`.
 #[cfg(unix)]
 fn unique_name(dir: &Path, name: &str) -> (PathBuf, String) {
     let first = dir.join(name);
@@ -1761,10 +1811,49 @@ mod tests {
         Target {
             path: path.to_path_buf(),
             bytes,
-            is_dir: path.is_dir(),
+            is_dir: entry_snapshot(path)
+                .is_some_and(|entry| entry.kind.is_dir()),
             hidden: false,
             identity: entry_identity(path),
         }
+    }
+
+    #[test]
+    fn entry_snapshots_observe_the_kind_and_identity_without_following_links() {
+        let temp = tree();
+        let file = temp.path().join("a/one.bin");
+        let directory = temp.path().join("a/b");
+        let link = temp.path().join("link");
+        link_dir(&directory, &link);
+
+        for (path, kind) in [
+            (&file, NodeKind::File),
+            (&directory, NodeKind::Directory),
+            (&link, NodeKind::Symlink),
+        ] {
+            let snapshot = entry_snapshot(path).expect("snapshot");
+            assert_eq!(snapshot.kind, kind);
+            assert_eq!(Some(snapshot.identity), entry_identity(path));
+        }
+        assert_ne!(entry_identity(&link), entry_identity(&directory));
+    }
+
+    #[test]
+    fn planning_refuses_a_directory_identity_described_as_a_file() {
+        let temp = tree();
+        let directory = temp.path().join("a/b");
+        let sentinel = directory.join("unmarked.txt");
+        fs::write(&sentinel, b"keep directory contents").expect("write");
+        let mut marked = target(&directory, 23);
+        marked.is_dir = false;
+
+        let planned = plan(&[marked], temp.path());
+        assert!(planned.is_empty());
+        assert_eq!(planned.blocked.len(), 1);
+        assert_eq!(
+            fs::read(&sentinel).expect("sentinel"),
+            b"keep directory contents"
+        );
     }
 
     /// [`system_tree`] for plain paths, keyed the way [`refuse`] keys them.
@@ -1929,8 +2018,38 @@ mod tests {
         assert_eq!(plan.bytes(), 30);
     }
 
-    /// Marks may sit on another volume — `-X` crosses filesystems, and a
-    /// disk mounted under the root can be marked — but the meter measures
+    #[cfg(windows)]
+    #[test]
+    fn windows_aliases_cover_children_before_counting_bytes() {
+        let temp = TempDir::new().expect("tempdir");
+        let outer = temp.path().join("CaseFolder");
+        let inner = outer.join("data.bin");
+        fs::create_dir(&outer).expect("mkdir");
+        let sentinel = b"keep sentinel";
+        fs::write(&inner, sentinel).expect("write");
+        let bytes = u64::try_from(sentinel.len()).expect("bytes");
+        let cases = [
+            (temp.path().join("casefolder"), inner.clone()),
+            (outer.clone(), inner.canonicalize().expect("verbatim child")),
+        ];
+        for (outer_alias, inner_alias) in cases {
+            assert_eq!(entry_identity(&outer_alias), entry_identity(&outer));
+            assert_eq!(entry_identity(&inner_alias), entry_identity(&inner));
+            let planned = plan(
+                &[target(&inner_alias, bytes), target(&outer_alias, bytes)],
+                temp.path(),
+            );
+            assert!(planned.blocked.is_empty(), "{:?}", planned.blocked);
+            assert_eq!(planned.targets.len(), 1);
+            assert_eq!(planned.targets[0].path, normalize(&outer_alias));
+            assert_eq!(planned.covered.len(), 1);
+            assert_eq!(planned.bytes(), bytes);
+            assert_eq!(fs::read(&inner).expect("sentinel"), sentinel);
+        }
+    }
+
+    /// Marks may sit on another volume - `-X` crosses filesystems, and a
+    /// disk mounted under the root can be marked - but the meter measures
     /// the scanned volume, so only the marks whose bytes come back to it may
     /// be projected onto its free space.
     #[test]
@@ -2727,7 +2846,7 @@ mod tests {
     fn percent_encoding_escapes_what_the_spec_requires() {
         assert_eq!(percent_encode("/home/tobi/a b"), "/home/tobi/a%20b");
         assert_eq!(percent_encode("/a/b-c.d_e~f"), "/a/b-c.d_e~f");
-        assert_eq!(percent_encode("/a/néw"), "/a/n%C3%A9w");
+        assert_eq!(percent_encode("/a/n�w"), "/a/n%C3%A9w");
         assert_eq!(percent_encode("/a\nb"), "/a%0Ab");
     }
 

@@ -6,8 +6,8 @@
 
 use std::path::{Path, PathBuf};
 
-use disktree_core::removal::{Target, addressable, entry_identity};
-use disktree_core::tree::{Metric, Node};
+use disktree_core::removal::{Target, addressable, entry_snapshot};
+use disktree_core::tree::Node;
 use rustc_hash::FxHashSet;
 
 /// Marked paths, in the order they were marked.
@@ -59,22 +59,28 @@ impl Marks {
         self.index.clear();
     }
 
-    /// Re-read sizes from a freshly scanned tree and drop marks whose path no
-    /// longer exists, so the tally never claims space that is already gone.
-    pub fn refresh(&mut self, root_path: &Path, root: &Node, metric: Metric) {
+    /// Re-read sizes from a freshly scanned tree and drop marks whose entry or
+    /// directory scope changed, preserving what the original mark authorized.
+    pub fn refresh(&mut self, root_path: &Path, root: &Node) {
         self.items.retain_mut(|item| {
-            if item.identity.is_some()
-                && entry_identity(&item.path) != item.identity
-            {
-                return false;
+            if let Some(marked) = item.identity {
+                let matches = entry_snapshot(&item.path).is_some_and(|entry| {
+                    entry.identity == marked
+                        && entry.kind.is_dir() == item.is_dir
+                });
+                if !matches {
+                    return false;
+                }
             }
             let Some(node) = find(root_path, root, &item.path) else {
                 // A scan says nothing about entries outside its root.
                 // They stay marked but the plan keeps them back.
                 return item.path.strip_prefix(root_path).is_err();
             };
-            item.bytes = node.value(metric);
-            item.is_dir = node.is_dir();
+            if node.is_dir() != item.is_dir {
+                return false;
+            }
+            item.bytes = node.bytes;
             item.hidden = is_hidden(&item.path);
             true
         });
@@ -128,7 +134,8 @@ pub fn display_path(path: &Path, home: Option<&Path>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use disktree_core::tree::{NodeKind, aggregate};
+    use disktree_core::removal::entry_identity;
+    use disktree_core::tree::{Metric, NodeKind, aggregate};
 
     fn file(name: &str, bytes: u64) -> Node {
         Node::entry(name, NodeKind::File, bytes)
@@ -178,10 +185,12 @@ mod tests {
         let root_path = Path::new("/home/tobi");
         let root = tree();
         let mut marks = Marks::default();
-        marks.toggle(target("/home/tobi/.cache", 0));
+        let mut cache = target("/home/tobi/.cache", 0);
+        cache.is_dir = true;
+        marks.toggle(cache);
         marks.toggle(target("/home/tobi/gone", 500));
 
-        marks.refresh(root_path, &root, Metric::Bytes);
+        marks.refresh(root_path, &root);
         assert_eq!(marks.items()[0].bytes, 900);
         assert!(marks.items()[0].is_dir);
         assert!(marks.items()[0].hidden, "the .cache mark is hidden");
@@ -195,9 +204,9 @@ mod tests {
         let mut marks = Marks::default();
         let marked = root_path.join("notes.bin");
         marks.toggle(target("/home/tobi/notes.bin", 100));
-        marks.refresh(root_path, &Node::directory("home"), Metric::Bytes);
+        marks.refresh(root_path, &Node::directory("home"));
         assert!(!marks.contains(&marked));
-        marks.refresh(root_path, &tree(), Metric::Bytes);
+        marks.refresh(root_path, &tree());
         assert!(marks.is_empty(), "a new entry is never marked implicitly");
         assert!(marks.toggle(target("/home/tobi/notes.bin", 100)));
     }
@@ -217,9 +226,48 @@ mod tests {
         let mut root = Node::directory("root");
         root.children.push(file("notes.bin", 11));
 
-        marks.refresh(temp.path(), &root, Metric::Bytes);
+        marks.refresh(temp.path(), &root);
         assert!(marks.is_empty());
         assert!(!marks.contains(&path));
+    }
+
+    #[test]
+    fn refresh_drops_a_mark_whose_directory_scope_changed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("entry");
+        std::fs::create_dir(&path).expect("mkdir");
+        let keep = path.join("keep.bin");
+        std::fs::write(&keep, b"keep").expect("write");
+        let identity = entry_identity(&path).expect("identity");
+        let mut marked = target(path.to_str().expect("text path"), 0);
+        marked.identity = Some(identity);
+        let mut marks = Marks::default();
+        marks.toggle(marked);
+        let mut root = Node::directory("root");
+        let mut entry = Node::directory("entry");
+        entry.children.push(file("keep.bin", 4));
+        root.children.push(entry);
+        aggregate(&mut root, Metric::Bytes);
+
+        marks.refresh(temp.path(), &root);
+
+        assert_eq!(entry_identity(&path), Some(identity));
+        assert!(marks.is_empty());
+        assert!(!marks.contains(&path));
+        assert_eq!(std::fs::read(keep).expect("read"), b"keep");
+    }
+
+    #[test]
+    fn refresh_never_changes_a_marks_directory_scope_from_scan_data() {
+        let root_path = Path::new("/home/tobi");
+        let marked = root_path.join(".cache");
+        let mut marks = Marks::default();
+        marks.toggle(target("/home/tobi/.cache", 0));
+
+        marks.refresh(root_path, &tree());
+
+        assert!(marks.is_empty());
+        assert!(!marks.contains(&marked));
     }
 
     #[test]
@@ -236,7 +284,7 @@ mod tests {
         let mut marks = Marks::default();
         marks.toggle(item);
 
-        marks.refresh(&new, &Node::directory("root"), Metric::Bytes);
+        marks.refresh(&new, &Node::directory("root"));
         assert_eq!(marks.len(), 1);
         assert!(marks.contains(&path));
         assert_eq!(marks.items()[0].bytes, 8);
@@ -245,7 +293,7 @@ mod tests {
         assert!(planned.blocked[0].reason.contains("outside"));
         std::fs::rename(&path, old.join("original.bin")).expect("move");
         std::fs::write(&path, b"replacement").expect("write");
-        marks.refresh(&new, &Node::directory("root"), Metric::Bytes);
+        marks.refresh(&new, &Node::directory("root"));
         assert!(marks.is_empty(), "a replacement still loses its mark");
         assert!(!marks.contains(&path));
     }

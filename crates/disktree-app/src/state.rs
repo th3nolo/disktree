@@ -1,8 +1,8 @@
 //! Application state and every mutation the UI can perform.
 //!
 //! The screens in [`crate::views`] are pure functions of this state; all the
-//! decisions — what is selected, what a mark means, what a key does, when to
-//! re-scan — live here so they can be reasoned about in one place.
+//! decisions - what is selected, what a mark means, what a key does, when to
+//! re-scan - live here so they can be reasoned about in one place.
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -15,7 +15,7 @@ use disktree_core::filter::{Keep, Matches, filter};
 use disktree_core::insights::{Candidate, worth_a_look};
 use disktree_core::removal::{
     Plan, RemovalEvent, RemovalHandle, RemovalMode, RootSnapshot, Target,
-    TrashBackend, detect_trash_backend, entry_identity, plan_from_scan,
+    TrashBackend, detect_trash_backend, entry_snapshot, plan_from_scan,
 };
 use disktree_core::scan::{Known, ScanHandle, ScanOptions, ScanSnapshot};
 use disktree_core::space::{
@@ -562,7 +562,7 @@ impl Disktree {
             .as_deref()
             .and_then(disktree_core::access::full_disk_access);
         // The disk of what is on screen, as `set_root` keeps it: `disktree
-        // /Volumes/Ext` then `g` measures that drive, like opening it with ⌘O.
+        // /Volumes/Ext` then `g` measures that drive, like opening it with ?O.
         tree.disk_root = volume_root_for(&tree.root_path);
         tree.file_table = file_table_readable(&tree.root_path);
         disktree_core::removal::prime_mount_points();
@@ -591,7 +591,7 @@ impl Disktree {
         }
         app.scan_epoch += 1;
         app.root_snapshot.clone_from(&app.scan_root_snapshot);
-        app.marks.refresh(&app.root_path, &tree, app.options.metric);
+        app.marks.refresh(&app.root_path, &tree);
         app.tree = Some(Arc::new(tree));
         app.cache = None;
         app.refresh_insights();
@@ -735,7 +735,7 @@ impl Disktree {
         }
         let len = self.volumes.len();
         let at = self.volume_highlight;
-        // Picker steps are ±1, but wrap either way without casting the length
+        // Picker steps are �1, but wrap either way without casting the length
         // down to a narrower type.
         let next = match step.signum() {
             1 => (at + 1) % len,
@@ -803,7 +803,7 @@ impl Disktree {
         }
     }
 
-    // ── scanning ────────────────────────────────────────────────────────
+    // �� scanning ��������������������������������������������������������
 
     /// Stop the walk in progress. A partial tree is never shown as if it
     /// were the whole one: a first scan leaves the panel saying it stopped,
@@ -1012,8 +1012,7 @@ impl Disktree {
                     self.device = device_for(&self.root_path);
                     self.file_table = file_table_readable(&self.root_path);
                 }
-                let metric = self.options.metric;
-                self.marks.refresh(&self.root_path, &node, metric);
+                self.marks.refresh(&self.root_path, &node);
                 discard(self.tree.replace(Arc::new(node)));
                 self.cache = None;
                 self.refresh_insights();
@@ -1088,7 +1087,7 @@ impl Disktree {
         .detach();
     }
 
-    // ── navigation ──────────────────────────────────────────────────────
+    // �� navigation ������������������������������������������������������
 
     pub fn tree(&self) -> Option<&Node> {
         self.tree.as_deref()
@@ -1280,7 +1279,7 @@ impl Disktree {
     /// Go inside one child of the current root, so that it fills the viewport.
     ///
     /// `from` is where the child was on screen, when the caller knows it.
-    /// Make `target` — any directory below the current root — the root.
+    /// Make `target` - any directory below the current root - the root.
     ///
     /// `from` is where that directory's contents were on screen, so the
     /// transition grows them from exactly there into the full viewport.
@@ -1694,7 +1693,7 @@ impl Disktree {
     /// A mark covers everything beneath it, since removing a directory takes
     /// its contents with it: marking a directory absorbs the marks already
     /// inside it, and a path inside a marked directory cannot be marked or
-    /// kept on its own — it says which mark it goes with instead.
+    /// kept on its own - it says which mark it goes with instead.
     pub fn toggle_mark(
         &mut self,
         crumbs: &[usize],
@@ -1768,13 +1767,17 @@ impl Disktree {
     pub fn target_at(&self, crumbs: &[usize]) -> Option<Target> {
         let node = self.node_at(crumbs)?;
         let path = self.path_at(crumbs)?;
-        let identity = entry_identity(&path)?;
+        let entry = entry_snapshot(&path)?;
+        // A stale file tile must never authorize recursive directory removal.
+        if entry.kind != node.kind {
+            return None;
+        }
         Some(Target {
-            identity: Some(identity),
+            identity: Some(entry.identity),
             hidden: is_hidden(&path),
             path,
-            bytes: node.value(self.options.metric),
-            is_dir: node.is_dir(),
+            bytes: node.bytes,
+            is_dir: entry.kind.is_dir(),
         })
     }
 
@@ -1798,7 +1801,7 @@ impl Disktree {
         )
     }
 
-    // ── layout and hit-testing ──────────────────────────────────────────
+    // �� layout and hit-testing ������������������������������������������
 
     /// Resolve everything the mosaic needs for this frame.
     ///
@@ -2013,7 +2016,7 @@ impl Disktree {
         hit(tiles, base_x, base_y).map(|tile| tile.crumbs().to_vec())
     }
 
-    // ── view ────────────────────────────────────────────────────────────
+    // �� view ������������������������������������������������������������
 
     /// Zoom toward a point.
     ///
@@ -2092,12 +2095,8 @@ impl Disktree {
             let mut tree = (**tree).clone();
             disktree_core::tree::aggregate(&mut tree, self.options.metric);
             discard(self.tree.replace(Arc::new(tree)));
-            let metric = self.options.metric;
-            self.marks.refresh(
-                &self.root_path,
-                self.tree.as_ref().unwrap(),
-                metric,
-            );
+            self.marks
+                .refresh(&self.root_path, self.tree.as_ref().unwrap());
         }
         self.crumbs = self.crumbs_for_path(&directory).unwrap_or_default();
         self.selected = selected.and_then(|path| self.crumbs_for_path(&path));
@@ -2134,7 +2133,7 @@ impl Disktree {
         }
     }
 
-    // ── removal ─────────────────────────────────────────────────────────
+    // �� removal ���������������������������������������������������������
 
     /// The review screen's commit: move to the trash at once, or ask first for
     /// a permanent deletion, which cannot be undone.
@@ -2417,7 +2416,7 @@ impl Disktree {
         self.filter_epoch += 1;
     }
 
-    // ── input ───────────────────────────────────────────────────────────
+    // �� input �����������������������������������������������������������
 
     /// Handle a key press.
     pub fn on_key_down(
@@ -2592,10 +2591,10 @@ impl Disktree {
             return;
         }
 
-        // ⌘ chords belong to the menu bar (⌘Q, ⌘W, ⌘R) or to the system.
-        // Read as plain letters they would act twice or by surprise: ⌘D
-        // would re-scan with apparent sizes, ⌘H would hide *and* toggle.
-        // Zoom (⌘= ⌘- ⌘0) is handled before this, with a window in hand.
+        // ? chords belong to the menu bar (?Q, ?W, ?R) or to the system.
+        // Read as plain letters they would act twice or by surprise: ?D
+        // would re-scan with apparent sizes, ?H would hide *and* toggle.
+        // Zoom (?= ?- ?0) is handled before this, with a window in hand.
         if event.keystroke.modifiers.platform {
             return;
         }
@@ -2837,7 +2836,7 @@ impl Disktree {
         );
         // Moves are delivered here even when the pointer is elsewhere in the
         // window. Outside the mosaic there is nothing to hover, and a stale
-        // tooltip would cover whatever the pointer went to — the panel's
+        // tooltip would cover whatever the pointer went to - the panel's
         // resize handle, for one.
         let area = self.treemap_size.get();
         let inside = local.x >= px(0.)
@@ -2855,7 +2854,7 @@ impl Disktree {
         let previous = self.hovered.clone();
         self.hovered = self.tile_at(local.x.as_f32(), local.y.as_f32());
         // The cursor tooltip is positioned from `pointer`, so a move *within*
-        // one tile still has to repaint — otherwise the tooltip sticks where
+        // one tile still has to repaint - otherwise the tooltip sticks where
         // the tile was first entered until the hover target changes.
         if self.hovered != previous || self.hovered.is_some() {
             cx.notify();
@@ -3230,7 +3229,7 @@ impl Render for Disktree {
         // The titlebar names the directory on screen, however it got there:
         // a key, a click, a rescan or a folder chosen from the menu.
         let title = format!(
-            "disktree · {}",
+            "disktree � {}",
             crate::marks::display_path(
                 &self.current_path(),
                 self.home.as_deref()

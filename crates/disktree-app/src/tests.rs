@@ -1,7 +1,7 @@
 //! End-to-end tests through the real window harness.
 //!
-//! These drive the application the way a person does — draw a frame, press
-//! keys, type — so they catch what unit tests on the state cannot: a screen
+//! These drive the application the way a person does - draw a frame, press
+//! keys, type - so they catch what unit tests on the state cannot: a screen
 //! that panics while painting, a binding that never fires, a removal that
 //! reports success without removing anything.
 
@@ -756,7 +756,7 @@ fn command_chords_are_not_read_as_plain_letters(cx: &mut TestAppContext) {
     let (view, cx) = view_over(temp.path(), cx);
     draw(cx);
 
-    // ⌘P and ⌘D are the menu bar's or nobody's; read as `p` and `d` they
+    // ?P and ?D are the menu bar's or nobody's; read as `p` and `d` they
     // would hide the selection and re-scan.
     let shown = read(&view, cx, |app| app.show_selection);
     press(cx, "cmd-p cmd-d");
@@ -1346,8 +1346,8 @@ fn widening_reuses_the_tree_it_has_and_reads_only_the_rest(
     });
     let before = read(&view, cx, |app| app.tree().map(|tree| tree.files));
 
-    // The trail runs from the top of the filesystem — "/", or a drive such
-    // as "C:\" — and the scanned root sits under its parents.
+    // The trail runs from the top of the filesystem - "/", or a drive such
+    // as "C:\" - and the scanned root sits under its parents.
     let trail = read(&view, cx, Disktree::breadcrumbs);
     let top = temp.path().ancestors().last().expect("a top");
     assert_eq!(trail[0].0, top.display().to_string());

@@ -136,6 +136,11 @@ Open the candidate with `$scanRoot` as its path and check:
    sentinel remain intact.
 4. After marking a file, rename it and create a new file at the old path.
    Refresh must drop the mark; the new occupant must survive.
+   Also replace a scanned file with a populated directory before marking
+   without rescanning: marking must refuse the changed kind and preserve
+   its contents. Repeat with a scanned directory replaced by a file.
+   Switch between Size and Files with a directory marked: the byte total
+   in review and the free-space projection must stay in bytes.
 5. Select a directory containing `.git`. The panel must say **status
    disabled**, without treating the checkout as clean.
 6. After a scan, rename the scanned folder and put a junction at its old
@@ -149,3 +154,4 @@ does not substitute for them.
 
 See [removal-safety.md](removal-safety.md) for the Windows recycling refusal
 and the difference between object identity and immutable contents.
+
