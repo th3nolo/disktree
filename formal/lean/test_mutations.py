@@ -34,6 +34,15 @@ def main():
         # Preserve well-typed Bool expressions; remove just one requirement.
         cases.append((f"drop_{flag}", model, f"p.{flag}", "true", safety))
     cases += [
+        ("broaden_path_scope", model,
+         "root ≠ [] ∧ root.length < path.length ∧ path.take root.length = root",
+         "root ≠ [] ∧ root.length < path.length ∧ path.take root.length = path.take root.length", model),
+        ("ignore_protected_flag", model,
+         "(∀ entry ∈ entries, below root entry.path ∧ entry.guardedOut = false)",
+         "(∀ entry ∈ entries, below root entry.path ∧ entry.guardedOut = entry.guardedOut)", model),
+        ("increase_entry_limit", model, "entries.length ≤ 20000", "entries.length ≤ 20001", model),
+        ("change_byte_ceiling", model, "def u64Max : Nat := 18446744073709551615",
+         "def u64Max : Nat := 1000", "RequiredProperties.lean"),
         ("empty_run", model, "if preflight.passes then execute plan.val decisions else []", "[]", model),
         ("ignore_current_identity", model,
          "path = entry.path ∧ world path = some entry.objectId", "path = entry.path", safety),

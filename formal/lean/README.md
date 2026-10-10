@@ -146,10 +146,19 @@ environment; indentation, attributes, private/escaped names, namespaces,
 block comments and nested files do not determine coverage. It collects
 transitive axioms with Lean's own `collectAxioms`, and records declaration
 kinds, types, values, safety and implementation-replacement attributes.
-Project axioms (even unused), unsafe/partial declarations and
+Project axioms (even unused), source-declared unsafe/partial definitions and
 `implemented_by` are refused. Dependencies beyond `propext`, `Quot.sound`
 and `Classical.choice`, including `sorryAx` and native proof shortcuts, fail
 the audit. Lean warnings remain errors.
+
+Lean generates partial `_unsafe_rec` runtime helpers for ordinary safe recursive
+definitions. They are recorded, not hidden. A helper is classified using
+Lean's compiler name API, absence of a source declaration range, a safe
+kernel definition as its parent, and identical types. This exception covers
+compiler output only; a source-declared lookalike is rejected. Every helper's
+axiom dependencies are still audited. The kernel proofs use the safe logical
+definitions; execution of the fixture binary additionally trusts Lean's
+pinned compiler. Tests cover ordinary recursion and attempted lookalikes.
 
 `required-properties.json` is an independent mandatory inventory.
 `RequiredProperties.lean` repeats the fixed expected statements and requires
@@ -159,12 +168,19 @@ statements, critical definitions or audit infrastructure are specification
 changes requiring review: no checker can guarantee fidelity if its own
 requirements are deliberately changed together with the implementation.
 
-Twenty audit tests cover report validation and real compiler/environment
-behavior. The six integration tests require the pinned compiler and are
-enabled in CI. Twelve mutation checks first require a green baseline, then
+Eight additional fixed contracts spell out path containment, the whole
+approval policy, the five-control run rule, empty/successful execution steps,
+identity-checked erasure and the exact `u64` maximum/saturating sum. They prevent
+the dependent theorem statements from silently following weakened meanings.
+
+Twenty-two audit tests cover report validation and real compiler/environment
+behavior. The eight integration tests require the pinned compiler and are
+enabled in CI. Sixteen mutation checks first require a green baseline, then
 require a Lean error in the relevant specification module when removing each
 preflight control, returning an empty run, bypassing identity checks, allowing
 duplicate/parent-first paths, deleting a required proof or weakening its type.
+They also weaken containment/protection, raise the entry limit, and change
+the byte ceiling without changing the arithmetic theorem statements.
 An unrelated build/setup failure is not counted as a rejected mutation.
 CI retains the version, checked merge commit, full JSON declaration/dependency
 audit, audit test logs, model fixtures and mutation diagnostics for 14 days.

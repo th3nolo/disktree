@@ -245,4 +245,37 @@ theorem contract_nested_complete_trace : nestedTrace 10 .cancel = [4, 5, 1, 2, 0
 theorem contract_nested_partial_failure : nestedTrace 3 .failure = [4, 5, 1] := by
   apply DiskTree.nested_partial_failure
 
+
+-- Fixed denotations also protect the definitions used by the statements.
+-- These are independent policy obligations, not assumptions or new axioms.
+theorem contract_path_scope (root path : Path) :
+    below root path ↔
+      root ≠ [] ∧ root.length < path.length ∧ path.take root.length = root := Iff.rfl
+
+theorem contract_plan_policy (root : Path) (entries : List Entry) :
+    valid root entries ↔
+      root ≠ [] ∧ entries.length ≤ 20000 ∧
+        (∀ entry ∈ entries, below root entry.path ∧ entry.guardedOut = false) ∧
+        entries.Pairwise (fun earlier later =>
+          earlier.path ≠ later.path ∧ ¬ below earlier.path later.path) := Iff.rfl
+
+theorem contract_run_rule (plan : Approved root) (p : Preflight) (ds : List Decision) :
+    run plan p ds =
+      if p.rootMatches && p.identitiesMatch && p.membershipMatches &&
+        p.guardsPass && p.handlesPinned then execute plan.val ds else [] := rfl
+
+theorem contract_empty_schedule (entries : List Entry) : execute entries [] = [] := by
+  cases entries <;> rfl
+
+theorem contract_successful_step (entry : Entry) (rest : List Entry) (ds : List Decision) :
+    execute (entry :: rest) (.remove :: ds) = entry :: execute rest ds := rfl
+
+theorem contract_erase_rule (world : World) (entry : Entry) (path : Path) :
+    erase world entry path =
+      if path = entry.path ∧ world path = some entry.objectId then none else world path := rfl
+
+theorem contract_u64_maximum : u64Max = 18446744073709551615 := rfl
+
+theorem contract_byte_sum (left right : Nat) :
+    saturatingAdd left right = min 18446744073709551615 (left + right) := rfl
 end DiskTree.Required

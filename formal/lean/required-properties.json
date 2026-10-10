@@ -110,7 +110,15 @@
     "DiskTree.Required.contract_replaced_object_survives",
     "DiskTree.Required.contract_nested_plan_is_accepted",
     "DiskTree.Required.contract_nested_complete_trace",
-    "DiskTree.Required.contract_nested_partial_failure"
+    "DiskTree.Required.contract_nested_partial_failure",
+    "DiskTree.Required.contract_path_scope",
+    "DiskTree.Required.contract_plan_policy",
+    "DiskTree.Required.contract_run_rule",
+    "DiskTree.Required.contract_empty_schedule",
+    "DiskTree.Required.contract_successful_step",
+    "DiskTree.Required.contract_erase_rule",
+    "DiskTree.Required.contract_u64_maximum",
+    "DiskTree.Required.contract_byte_sum"
   ],
   "NestedFixtures.lean": [
     "DiskTree.nested_plan_is_accepted",

@@ -73,15 +73,17 @@ def validate_report(report: dict, sources: set[str], required: dict[str, list[st
         theorems = set()
         for row in rows:
             expected = {"name", "user_name", "kind", "type", "value", "unsafe", "partial",
-                        "implemented_by", "axioms"}
+                        "compiler_auxiliary", "implemented_by", "axioms"}
             if not isinstance(row, dict) or set(row) != expected:
                 raise RuntimeError(f"invalid declaration record in {source}")
             name = row["name"]
             if name in names:
                 raise RuntimeError(f"duplicate declaration in {source}: {name}")
             names.add(name)
-            if row["kind"] == "axiom" or row["unsafe"] or row["partial"] or row["implemented_by"]:
+            if row["kind"] == "axiom" or row["unsafe"] or row["implemented_by"]:
                 raise RuntimeError(f"prohibited declaration in {source}: {name}")
+            if row["partial"] and not row["compiler_auxiliary"]:
+                raise RuntimeError(f"source partial declaration in {source}: {name}")
             if unexpected := set(row["axioms"]) - ALLOWED_AXIOMS:
                 raise RuntimeError(f"untrusted dependencies for {name}: {unexpected}")
             if row["kind"] == "theorem":
@@ -101,8 +103,9 @@ def audit(root: Path, output: Path) -> None:
     sources = discover_sources(root)
     required = json.loads((root / "required-properties.json").read_text(encoding="utf-8"))
     report = {source.relative_to(root).as_posix(): inspect_source(root, source) for source in sources}
-    count = validate_report(report, {source.relative_to(root).as_posix() for source in sources}, required)
+    # Retain checked declarations even when validation refuses one of them.
     output.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    count = validate_report(report, {source.relative_to(root).as_posix() for source in sources}, required)
     print(f"{count} checked theorem declarations across {len(sources)} modules; "
           "required properties present; only Lean foundations permitted")
 

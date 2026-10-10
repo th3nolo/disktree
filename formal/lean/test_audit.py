@@ -13,7 +13,8 @@ ROOT = Path(__file__).parent.resolve()
 
 def row(name="DiskTree.first", axioms=(), **changes):
     result = dict(name=name, user_name=name, kind="theorem", type="True", value="proof",
-                  unsafe=False, partial=False, implemented_by=None, axioms=list(axioms))
+                  unsafe=False, partial=False, compiler_auxiliary=False,
+                  implemented_by=None, axioms=list(axioms))
     result.update(changes)
     return result
 
@@ -162,6 +163,29 @@ class LeanEnvironmentTests(unittest.TestCase):
         )
         with self.assertRaises(RuntimeError):
             validate_report({"Extra.lean": records}, {"Extra.lean"}, {})
+
+    def test_safe_recursion_keeps_compiler_helpers_without_trusting_extra_axioms(self):
+        records = self.inspect(
+            "def count : List Nat → Nat\n"
+            "  | [] => 0\n"
+            "  | _ :: rest => count rest + 1\n"
+            "theorem normal : count [1, 2] = 2 := by decide\n"
+        )
+        self.assertTrue(any(r["compiler_auxiliary"] for r in records))
+        validate_report({"Extra.lean": records}, {"Extra.lean"}, {})
+
+    def test_source_unsafe_partial_and_spoofed_helper_are_rejected(self):
+        cases = (
+            "unsafe def unsafeValue : Nat := 1\n",
+            "partial def forever (n : Nat) : Nat := forever n\n",
+            "def safeParent : Nat := 1\n"
+            "partial def safeParent._unsafe_rec : Nat := 1\n",
+        )
+        for code in cases:
+            with self.subTest(code=code):
+                with self.assertRaises(RuntimeError):
+                    records = self.inspect(code + "theorem normal : True := by trivial\n")
+                    validate_report({"Extra.lean": records}, {"Extra.lean"}, {})
 
 
 if __name__ == "__main__":
