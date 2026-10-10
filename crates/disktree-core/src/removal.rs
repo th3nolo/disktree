@@ -2022,14 +2022,17 @@ mod tests {
     #[test]
     fn windows_aliases_cover_children_before_counting_bytes() {
         let temp = TempDir::new().expect("tempdir");
-        let outer = temp.path().join("CaseFolder");
+        // Expand a runner's short TEMP path before varying case or prefix.
+        let root =
+            guard_key(&temp.path().canonicalize().expect("canonical root"));
+        let outer = root.join("CaseFolder");
         let inner = outer.join("data.bin");
         fs::create_dir(&outer).expect("mkdir");
         let sentinel = b"keep sentinel";
         fs::write(&inner, sentinel).expect("write");
         let bytes = u64::try_from(sentinel.len()).expect("bytes");
         let cases = [
-            (temp.path().join("casefolder"), inner.clone()),
+            (root.join("casefolder"), inner.clone()),
             (outer.clone(), inner.canonicalize().expect("verbatim child")),
         ];
         for (outer_alias, inner_alias) in cases {
@@ -2037,7 +2040,7 @@ mod tests {
             assert_eq!(entry_identity(&inner_alias), entry_identity(&inner));
             let planned = plan(
                 &[target(&inner_alias, bytes), target(&outer_alias, bytes)],
-                temp.path(),
+                &root,
             );
             assert!(planned.blocked.is_empty(), "{:?}", planned.blocked);
             assert_eq!(planned.targets.len(), 1);
