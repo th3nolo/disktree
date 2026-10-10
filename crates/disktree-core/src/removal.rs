@@ -26,6 +26,10 @@ use std::thread;
 
 use crate::tree::NodeKind;
 
+#[cfg(all(test, windows))]
+#[path = "removal_acceptance.rs"]
+mod acceptance;
+
 /// One path the user asked to remove.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
