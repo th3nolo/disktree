@@ -22,12 +22,20 @@ structure Entry where
 
 -- This represents one reviewed target's reverse preorder, including its own
 -- entry. The global Rust batch budget is stricter than this per-target bound.
+def orderedDistinct (entries : List Entry) : Prop :=
+  entries.Pairwise (fun earlier later =>
+    earlier.path ≠ later.path ∧ ¬ below earlier.path later.path)
+
+instance (entries : List Entry) : Decidable (orderedDistinct entries) :=
+  inferInstanceAs (Decidable (entries.Pairwise _))
+
 def valid (root : Path) (entries : List Entry) : Prop :=
   root ≠ [] ∧ entries.length ≤ 20000 ∧
-    ∀ entry ∈ entries, below root entry.path ∧ entry.guardedOut = false
+    (∀ entry ∈ entries, below root entry.path ∧ entry.guardedOut = false) ∧
+    orderedDistinct entries
 
 instance (root : Path) (entries : List Entry) : Decidable (valid root entries) :=
-  inferInstanceAs (Decidable (_ ∧ _ ∧ _))
+  inferInstanceAs (Decidable (_ ∧ _ ∧ _ ∧ _))
 
 abbrev Approved (root : Path) := { entries : List Entry // valid root entries }
 
@@ -116,7 +124,7 @@ theorem removed_stays_in_scope (plan : Approved root) (preflight : Preflight)
     (decisions : List Decision) (entry : Entry)
     (h : entry ∈ run plan preflight decisions) :
     below root entry.path ∧ entry.guardedOut = false := by
-  exact plan.property.2.2 entry (removed_was_approved plan preflight decisions entry h)
+  exact plan.property.2.2.1 entry (removed_was_approved plan preflight decisions entry h)
 
 theorem unapproved_entry_never_removed (plan : Approved root) (preflight : Preflight)
     (decisions : List Decision) (entry : Entry) (h : entry ∉ plan.val) :
@@ -160,7 +168,7 @@ theorem removed_count_fits_u64 (plan : Approved root) (preflight : Preflight)
 abbrev World := Path → Option Nat
 
 def erase (world : World) (entry : Entry) : World :=
-  fun path => if path = entry.path then none else world path
+  fun path => if path = entry.path ∧ world path = some entry.objectId then none else world path
 
 def applyRemovals : World → List Entry → World
   | world, [] => world
@@ -215,8 +223,12 @@ def fixtureEntry (index : Nat) : Entry :=
 
 def fixtureOrder : List Entry := [fixtureEntry 2, fixtureEntry 1, fixtureEntry 0, fixtureEntry 3]
 
+def allPass : Preflight := ⟨true, true, true, true, true⟩
+
+def fixturePlan : Approved [1] := ⟨fixtureOrder, by decide⟩
+
 def fixtureTrace (cancelAfter : Nat) : List Nat :=
-  (execute fixtureOrder (List.replicate cancelAfter .remove ++ [.cancel])).map Entry.objectId
+  (run fixturePlan allPass (List.replicate cancelAfter .remove ++ [.cancel])).map Entry.objectId
 
 -- These concrete propositions also exercise the guard and failure branches in
 -- the kernel. They complement the universal theorems above.
@@ -238,31 +250,3 @@ theorem dynamic_enrollment_counterexample :
     fixtureEntry 9 ∉ execute fixtureOrder (List.replicate 5 .remove) := by decide
 
 end DiskTree
-
-#print axioms DiskTree.approve_rejects_invalid
-#print axioms DiskTree.empty_root_rejected
-#print axioms DiskTree.root_is_not_below_itself
-#print axioms DiskTree.execute_prefix
-#print axioms DiskTree.run_prefix
-#print axioms DiskTree.removed_was_approved
-#print axioms DiskTree.removed_stays_in_scope
-#print axioms DiskTree.unapproved_entry_never_removed
-#print axioms DiskTree.preflight_failure_removes_nothing
-#print axioms DiskTree.cancelled_before_next
-#print axioms DiskTree.failure_before_next
-#print axioms DiskTree.cloud_refusal_before_next
-#print axioms DiskTree.removed_count_bounded
-#print axioms DiskTree.removed_count_fits_u64
-#print axioms DiskTree.apply_preserves_unselected
-#print axioms DiskTree.run_preserves_unselected
-#print axioms DiskTree.saturating_add_is_bounded
-#print axioms DiskTree.saturating_add_does_not_wrap
-#print axioms DiskTree.saturating_add_preserves_in_range
-#print axioms DiskTree.saturating_add_clamps_overflow
-#print axioms DiskTree.sibling_component_rejected
-#print axioms DiskTree.protected_entry_rejected
-#print axioms DiskTree.ordinary_entry_accepted
-#print axioms DiskTree.cancellation_keeps_partial_result
-#print axioms DiskTree.complete_trace_has_no_extra_entries
-#print axioms DiskTree.empty_prefix_counterexample
-#print axioms DiskTree.dynamic_enrollment_counterexample

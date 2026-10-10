@@ -3,3 +3,6 @@ __pycache__/
 *.log
 lean-version.txt
 checked-commit.txt
+.audit-*/
+proof-audit.json
+mutation-results.json

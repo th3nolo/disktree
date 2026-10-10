@@ -55,10 +55,16 @@ jobs:
           lean --version | tee lean-version.txt
           git rev-parse HEAD > checked-commit.txt
           lake build
-          lake env lean RemovalModel.lean | tee proof-audit.log
-          python3 -m unittest test_audit.py
-          python3 audit.py proof-audit.log
+          LEAN_AUDIT_INTEGRATION=1 python3 -m unittest -v test_audit.py 2>&1 | tee auditor-tests.log
+          python3 audit.py proof-audit.json | tee proof-audit.log
           lake exe checkFixtures | tee fixture-results.log
+
+      - name: Reject weakened specifications
+        working-directory: formal/lean
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 test_mutations.py | tee mutation-tests.log
 
       - name: Retain formal evidence
         if: always()
@@ -69,6 +75,10 @@ jobs:
             formal/lean/lean-version.txt
             formal/lean/checked-commit.txt
             formal/lean/proof-audit.log
+            formal/lean/proof-audit.json
+            formal/lean/auditor-tests.log
             formal/lean/fixture-results.log
+            formal/lean/mutation-tests.log
+            formal/lean/mutation-results.json
           if-no-files-found: error
           retention-days: 14
