@@ -186,11 +186,11 @@ pub fn remove_reviewed(
         }
     }
     for (removed, (entry, file)) in
-        review.entries.iter().zip(&opened).rev().enumerate()
+        review.entries.iter().zip(opened).rev().enumerate()
     {
         let result = check_cancel(cancel)
-            .and_then(|()| refuse_cloud(&entry.path, file, &roots))
-            .and_then(|()| delete_opened(file));
+            .and_then(|()| refuse_cloud(&entry.path, &file, &roots))
+            .and_then(|()| delete_opened(&file));
         if let Err(error) = result {
             return Err(io::Error::new(
                 error.kind(),
@@ -200,6 +200,9 @@ pub fn remove_reviewed(
                 ),
             ));
         }
+        // NTFS can keep a deleted child pending until its handle closes.
+        // Close only the removed child; every remaining entry stays pinned.
+        drop(file);
         on_removed(&entry.path);
     }
     Ok(())
@@ -263,11 +266,11 @@ fn refuse_cloud(path: &Path, file: &File, roots: &[PathBuf]) -> io::Result<()> {
                                     deletion could propagate to the cloud",
         ));
     }
-    // A name-surrogate link is unlinked, not followed into its destination.
-    if meta.file_type().is_symlink() {
-        return Ok(());
-    }
-    if meta.file_attributes() & (EVICTED | FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+    let is_link = meta.file_type().is_symlink();
+    if !is_link
+        && meta.file_attributes() & (EVICTED | FILE_ATTRIBUTE_REPARSE_POINT)
+            != 0
+    {
         return Err(io::Error::other(
             "cloud placeholders and unsupported \
                                     reparse providers are protected",
@@ -276,7 +279,9 @@ fn refuse_cloud(path: &Path, file: &File, roots: &[PathBuf]) -> io::Result<()> {
     // An ordinary hydrated child can return INVALID_FUNCTION even beneath
     // a registered root. Ask every canonical ancestor too; an unsupported
     // child must never hide a registered root higher up the same path.
-    for ancestor in path.ancestors() {
+    // Unlinking a final link must not follow its destination. Its own
+    // parent can still synchronize the unlink, so inspect that ancestry.
+    for ancestor in path.ancestors().skip(usize::from(is_link)) {
         let inspected = inspection(ancestor)?;
         let attributes = inspected.metadata()?.file_attributes();
         if attributes & (EVICTED | FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
@@ -425,6 +430,29 @@ mod tests {
         assert_eq!(
             fs::read(file).expect("survived"),
             b"must never reach the cloud as a deletion"
+        );
+    }
+
+    #[test]
+    fn a_link_inside_a_registered_sync_root_is_also_protected() {
+        let temp = tempfile::TempDir::new().expect("temp");
+        let root = temp.path().join("cloud");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&root).expect("sync directory");
+        fs::create_dir(&outside).expect("outside directory");
+        let sentinel = outside.join("keep.bin");
+        fs::write(&sentinel, b"never follow the link").expect("sentinel");
+        let link = root.join("link");
+        assert!(super::super::make_junction(&link, &outside));
+        let _registered = RegisteredRoot::new(&root);
+        let cancel = AtomicBool::new(false);
+        let error = review_tree(&link, &cancel, REVIEW_ENTRY_LIMIT)
+            .expect_err("the link's sync ancestry must be protected");
+        assert!(error.to_string().contains("protected"), "{error}");
+        assert!(fs::symlink_metadata(link).is_ok());
+        assert_eq!(
+            fs::read(sentinel).expect("outside survived"),
+            b"never follow the link"
         );
     }
 
