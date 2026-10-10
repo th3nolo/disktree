@@ -142,13 +142,13 @@ class LeanEnvironmentTests(unittest.TestCase):
         self.assertIn("nested", {r["user_name"] for r in records if r["kind"] == "theorem"})
 
     def test_unused_axiom_is_rejected(self):
-        records = self.inspect("axiom unused : False\ntheorem normal : True := by trivial\n")
         with self.assertRaises(RuntimeError):
+            records = self.inspect("axiom unused : False\ntheorem normal : True := by trivial\n")
             validate_report({"Extra.lean": records}, {"Extra.lean"}, {})
 
     def test_native_shortcut_is_rejected(self):
-        records = self.inspect("theorem native : 1 = 1 := by native_decide\n")
         with self.assertRaises(RuntimeError):
+            records = self.inspect("theorem native : 1 = 1 := by native_decide\n")
             validate_report({"Extra.lean": records}, {"Extra.lean"}, {})
 
     def test_sorry_is_rejected_by_compiler(self):
@@ -156,12 +156,12 @@ class LeanEnvironmentTests(unittest.TestCase):
             self.inspect("theorem unfinished : False := by sorry\n")
 
     def test_implemented_by_is_rejected_even_without_native_decide(self):
-        records = self.inspect(
-            "def implementation : Bool := false\n"
-            "@[implemented_by implementation] def claimed : Bool := true\n"
-            "theorem normal : True := by trivial\n"
-        )
         with self.assertRaises(RuntimeError):
+            records = self.inspect(
+                "def implementation : Bool := false\n"
+                "@[implemented_by implementation] def claimed : Bool := true\n"
+                "theorem normal : True := by trivial\n"
+            )
             validate_report({"Extra.lean": records}, {"Extra.lean"}, {})
 
     def test_safe_recursion_keeps_compiler_helpers_without_trusting_extra_axioms(self):

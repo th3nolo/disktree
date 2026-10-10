@@ -155,7 +155,10 @@ Lean generates partial `_unsafe_rec` runtime helpers for ordinary safe recursive
 definitions. They are recorded, not hidden. A helper is classified using
 Lean's compiler name API, absence of a source declaration range, a safe
 kernel definition as its parent, and identical types. This exception covers
-compiler output only; a source-declared lookalike is rejected. Every helper's
+compiler output only. Lean's actual syntax parser separately refuses source
+keywords for unsafe/partial definitions, axioms and proof shortcuts, while
+ignoring comments and string contents. A source-declared lookalike is rejected;
+source ranges alone are not considered sufficient provenance. Every helper's
 axiom dependencies are still audited. The kernel proofs use the safe logical
 definitions; execution of the fixture binary additionally trusts Lean's
 pinned compiler. Tests cover ordinary recursion and attempted lookalikes.

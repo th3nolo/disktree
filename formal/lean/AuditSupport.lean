@@ -6,8 +6,21 @@ import Lean.Compiler.Old
 -- Python appends this command; no per-theorem reports are maintained by hand.
 open Lean Elab Command
 
+-- Use Lean's parsed syntax for source hygiene, not words in comments/strings.
+-- The environment remains the authority for the declaration inventory.
+private partial def prohibitedSyntax : Syntax → Bool
+  | .atom _ value =>
+    ["sorry", "admit", "axiom", "native_decide", "unsafe", "partial", "implemented_by"].contains value
+  | .ident _ _ name _ =>
+    ["sorry", "admit", "axiom", "native_decide", "unsafe", "partial", "implemented_by"].contains name.toString
+  | .node _ _ args => args.any prohibitedSyntax
+  | .missing => false
+
 elab "#audit_module" : command => do
   let env := (← getEnv).setExporting false
+  let sourceTree ← liftIO <| Parser.testParseFile env (← getFileName)
+  if prohibitedSyntax sourceTree then
+    throwError "prohibited source syntax in audited module"
   let declarations := env.checked.get.constants.foldStage2
     (fun acc name info => acc.push (name, info)) #[]
   let mut rows : Array Json := #[]
