@@ -131,7 +131,7 @@ class LeanEnvironmentTests(unittest.TestCase):
             "end Other\n"
         )
         names = {r["user_name"] for r in records if r["kind"] == "theorem"}
-        for name in ("Other.indented", "Other.attributed", "Other.hidden", "Other.space name"):
+        for name in ("Other.indented", "Other.attributed", "Other.hidden", "Other.«space name»"):
             self.assertIn(name, names)
         self.assertFalse(any("fictional" in name for name in names))
         validate_report({"Extra.lean": records}, {"Extra.lean"}, {"Extra.lean": list(names)})
