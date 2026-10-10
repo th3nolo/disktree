@@ -186,6 +186,29 @@ theorem run_preserves_unselected (world : World) (plan : Approved root)
   intro entry member
   exact h entry (removed_was_approved plan preflight decisions entry member)
 
+-- Mathematical specification of Rust's unsigned saturating_add. Bounds on
+-- entry counts alone cannot bound arbitrary supplied byte estimates.
+def u64Max : Nat := 18446744073709551615
+
+def saturatingAdd (left right : Nat) : Nat := min u64Max (left + right)
+
+theorem saturating_add_is_bounded (left right : Nat) :
+    saturatingAdd left right ≤ u64Max := by
+  exact Nat.min_le_left _ _
+
+theorem saturating_add_does_not_wrap (left right : Nat) (h : left ≤ u64Max) :
+    left ≤ saturatingAdd left right := by
+  unfold saturatingAdd
+  omega
+
+theorem saturating_add_preserves_in_range (left right : Nat)
+    (h : left + right ≤ u64Max) : saturatingAdd left right = left + right := by
+  exact Nat.min_eq_right h
+
+theorem saturating_add_clamps_overflow (left right : Nat)
+    (h : u64Max ≤ left + right) : saturatingAdd left right = u64Max := by
+  exact Nat.min_eq_left h
+
 -- Shared fixtures use three sorted children and their parent in deletion order.
 def fixtureEntry (index : Nat) : Entry :=
   ⟨if index = 3 then [1, 2] else [1, 2, index + 10], index, false⟩
@@ -232,6 +255,10 @@ end DiskTree
 #print axioms DiskTree.removed_count_fits_u64
 #print axioms DiskTree.apply_preserves_unselected
 #print axioms DiskTree.run_preserves_unselected
+#print axioms DiskTree.saturating_add_is_bounded
+#print axioms DiskTree.saturating_add_does_not_wrap
+#print axioms DiskTree.saturating_add_preserves_in_range
+#print axioms DiskTree.saturating_add_clamps_overflow
 #print axioms DiskTree.sibling_component_rejected
 #print axioms DiskTree.protected_entry_rejected
 #print axioms DiskTree.ordinary_entry_accepted

@@ -52,8 +52,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          lean --version
+          lean --version | tee lean-version.txt
+          git rev-parse HEAD > checked-commit.txt
           lake build
           lake env lean RemovalModel.lean | tee proof-audit.log
+          python3 -m unittest test_audit.py
           python3 audit.py proof-audit.log
-          lake exe checkFixtures
+          lake exe checkFixtures | tee fixture-results.log
+
+      - name: Retain formal evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lean-removal-evidence
+          path: |
+            formal/lean/lean-version.txt
+            formal/lean/checked-commit.txt
+            formal/lean/proof-audit.log
+            formal/lean/fixture-results.log
+          if-no-files-found: error
+          retention-days: 14

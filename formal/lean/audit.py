@@ -23,7 +23,11 @@ def audit(log_path: str) -> None:
             raise RuntimeError(f"prohibited construct in {source}: {forbidden[0]}")
         theorem_names.update(re.findall(r"^theorem\s+(\w+)", code, re.MULTILINE))
 
-    log = Path(log_path).read_text(encoding="utf-8")
+    validate_report(Path(log_path).read_text(encoding="utf-8"), theorem_names)
+    print(f"{len(theorem_names)} theorems audited; only Lean foundations permitted")
+
+
+def validate_report(log: str, theorem_names: set[str]) -> None:
     reports = re.findall(
         r"'DiskTree\.(\w+)' (?:does not depend on any axioms|depends on axioms:\s*\[([^\]]*)\])",
         log,
@@ -38,7 +42,6 @@ def audit(log_path: str) -> None:
             raise RuntimeError(f"untrusted dependencies for {name}: {unexpected}")
     if not theorem_names:
         raise RuntimeError("no theorems checked")
-    print(f"{len(theorem_names)} theorems audited; only Lean foundations permitted")
 
 
 if __name__ == "__main__":

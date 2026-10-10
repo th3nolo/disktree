@@ -257,7 +257,12 @@ impl Plan {
     }
 
     pub fn bytes(&self) -> u64 {
-        self.targets.iter().map(|target| target.bytes).sum()
+        // Estimates can come from saturated scan nodes or public callers.
+        // They must not panic the review screen or wrap into a smaller total.
+        self.targets
+            .iter()
+            .map(|target| target.bytes)
+            .fold(0, u64::saturating_add)
     }
 
     /// Bytes the targets free on the volume `root` is on: the only ones the
@@ -280,7 +285,8 @@ impl Plan {
     /// either, since a projection the meter cannot stand behind is worse
     /// than a smaller one.
     pub fn unattributed(&self) -> u64 {
-        self.bytes().saturating_sub(self.reclaim + self.foreign)
+        self.bytes()
+            .saturating_sub(self.reclaim.saturating_add(self.foreign))
     }
 
     pub const fn is_empty(&self) -> bool {
@@ -393,8 +399,12 @@ fn plan_against(targets: &[Target], root: &Path, mounts: &MountTable) -> Plan {
             &plan.root,
             &target.path,
         ) {
-            crate::space::Attribution::Scanned => plan.reclaim += bytes,
-            crate::space::Attribution::Other => plan.foreign += bytes,
+            crate::space::Attribution::Scanned => {
+                plan.reclaim = plan.reclaim.saturating_add(bytes);
+            }
+            crate::space::Attribution::Other => {
+                plan.foreign = plan.foreign.saturating_add(bytes);
+            }
             crate::space::Attribution::Unknown => {}
         }
     }
@@ -1495,7 +1505,9 @@ fn run(
         };
         if outcome.is_ok() {
             removed += 1;
-            bytes += target.bytes;
+            // An oversized estimate must not lose the terminal event after
+            // successful deletion. Actual free space is measured separately.
+            bytes = bytes.saturating_add(target.bytes);
         } else {
             failed += 1;
         }
