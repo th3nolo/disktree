@@ -17,14 +17,14 @@ instance (root path : Path) : Decidable (below root path) :=
 structure Entry where
   path : Path
   objectId : Nat
-  protected : Bool
+  guardedOut : Bool
   deriving DecidableEq, Repr
 
 -- This represents one reviewed target's reverse preorder, including its own
 -- entry. The global Rust batch budget is stricter than this per-target bound.
 def valid (root : Path) (entries : List Entry) : Prop :=
   root ≠ [] ∧ entries.length ≤ 20000 ∧
-    ∀ entry ∈ entries, below root entry.path ∧ entry.protected = false
+    ∀ entry ∈ entries, below root entry.path ∧ entry.guardedOut = false
 
 instance (root : Path) (entries : List Entry) : Decidable (valid root entries) :=
   inferInstanceAs (Decidable (_ ∧ _ ∧ _))
@@ -115,7 +115,7 @@ theorem removed_was_approved (plan : Approved root) (preflight : Preflight)
 theorem removed_stays_in_scope (plan : Approved root) (preflight : Preflight)
     (decisions : List Decision) (entry : Entry)
     (h : entry ∈ run plan preflight decisions) :
-    below root entry.path ∧ entry.protected = false := by
+    below root entry.path ∧ entry.guardedOut = false := by
   exact plan.property.2.2 entry (removed_was_approved plan preflight decisions entry h)
 
 theorem unapproved_entry_never_removed (plan : Approved root) (preflight : Preflight)
@@ -205,7 +205,7 @@ theorem complete_trace_has_no_extra_entries : fixtureTrace 10 = [2, 1, 0, 3] := 
 
 -- The deliberately weaker empty-prefix rule admits an unrelated path.
 def weakBelow (root path : Path) : Prop := path.take root.length = root
-theorem empty_prefix_counterexample : weakBelow [] [99] ∧ ¬ below [] [99] := by decide
+theorem empty_prefix_counterexample : weakBelow [] [99] ∧ ¬ below [] [99] := by simp [weakBelow, below]
 
 -- Fresh recursive enumeration would enroll a late entry; the frozen executor
 -- cannot. This is a pure counterexample, with no filesystem operations.

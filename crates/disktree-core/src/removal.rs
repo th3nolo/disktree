@@ -2137,6 +2137,80 @@ mod tests {
         temp
     }
 
+    #[test]
+    fn overflowing_review_estimates_are_clamped() {
+        let temp = tree();
+        let root = temp.path();
+        let targets = vec![
+            target(&root.join("a/one.bin"), u64::MAX),
+            target(&root.join("a/c.bin"), 1),
+        ];
+        let plan = Plan {
+            targets,
+            reclaim: u64::MAX,
+            foreign: 1,
+            ..Plan::default()
+        };
+        assert_eq!(plan.bytes(), u64::MAX);
+        assert_eq!(plan.unattributed(), 0);
+    }
+
+    #[test]
+    fn overflowing_same_volume_projection_is_clamped() {
+        let temp = tree();
+        let root = temp.path();
+        let plan = plan_against(
+            &[
+                target(&root.join("a/one.bin"), u64::MAX),
+                target(&root.join("a/c.bin"), 1),
+            ],
+            root,
+            &MountTable::default(),
+        );
+        assert_eq!(plan.targets.len(), 2);
+        assert_eq!(plan.reclaim(), u64::MAX);
+        assert_eq!(plan.foreign(), 0);
+    }
+
+    #[test]
+    fn overflowing_worker_estimates_still_send_done_and_preserve_neighbours() {
+        let temp = tree();
+        let root = temp.path();
+        let keep = root.join("outside-selection.bin");
+        fs::write(&keep, b"unselected").expect("canary");
+        let plan = Plan {
+            root: root.to_path_buf(),
+            root_snapshot: RootSnapshot::capture(root),
+            targets: vec![
+                target(&root.join("a/one.bin"), u64::MAX),
+                target(&root.join("a/c.bin"), 1),
+            ],
+            ..Plan::default()
+        }
+        .prepare_review(&AtomicBool::new(false))
+        .expect("reviewed");
+        let (sender, receiver) = mpsc::channel();
+        run(
+            &plan,
+            RemovalMode::Permanent,
+            TrashBackend::None,
+            &AtomicBool::new(false),
+            &sender,
+        );
+        drop(sender);
+        assert!(matches!(
+            receiver.iter().last(),
+            Some(RemovalEvent::Done {
+                removed: 2,
+                bytes: u64::MAX,
+                failed: 0,
+            })
+        ));
+        assert!(!root.join("a/one.bin").exists());
+        assert!(!root.join("a/c.bin").exists());
+        assert_eq!(fs::read(keep).expect("canary survived"), b"unselected");
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn desktop_media_exception_requires_an_independent_disk() {
