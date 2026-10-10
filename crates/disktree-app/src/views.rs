@@ -299,8 +299,7 @@ fn delete_dialog(
          {advice} Click Delete or press Ctrl+Enter to confirm.",
         human_bytes(plan.bytes())
     );
-    let confirm = cx.entity().downgrade();
-    let cancel = confirm.clone();
+    let cancel = cx.entity().downgrade();
     let actions = div()
         .flex()
         .flex_row()
@@ -347,13 +346,9 @@ fn delete_dialog(
     });
     alert_dialog(&app.confirm_focus, cx)
         .open(true)
-        .on_ok(move |_, window, cx| {
-            let _ = confirm.update(cx, |this, cx| {
-                this.cancel_delete(cx);
-                this.apply_focus(window, cx);
-            });
-            false
-        })
+        // The dialog's Enter action can run before key-event capture.
+        // Keep it inert; the Delete button and fresh Ctrl+Enter own approval.
+        .on_ok(|_, _, _| false)
         .on_cancel(move |_, window, cx| {
             let _ = cancel.update(cx, |this, cx| {
                 this.cancel_delete(cx);
@@ -2958,6 +2953,7 @@ fn commit_controls(
         .child(
             button("back", "Back", ButtonVariant::Secondary, cx).on_click(
                 cx.listener(|this, _, window, cx| {
+                    this.cancel_delete(cx);
                     this.screen = Screen::Explore;
                     cx.notify();
                     window.focus(&this.focus, cx);

@@ -228,8 +228,8 @@ fn overlaps_sync_root(path: &Path, roots: &[PathBuf]) -> bool {
 
 fn cloud_result(result: i32) -> io::Result<bool> {
     use windows_sys::Win32::Foundation::{
-        ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT, ERROR_NOT_A_CLOUD_FILE,
-        ERROR_NOT_A_CLOUD_SYNC_ROOT,
+        ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT, ERROR_INVALID_FUNCTION,
+        ERROR_NOT_A_CLOUD_FILE, ERROR_NOT_A_CLOUD_SYNC_ROOT,
     };
     if result >= 0 {
         return Ok(true);
@@ -239,6 +239,7 @@ fn cloud_result(result: i32) -> io::Result<bool> {
         ERROR_NOT_A_CLOUD_FILE,
         ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT,
         ERROR_NOT_A_CLOUD_SYNC_ROOT,
+        ERROR_INVALID_FUNCTION,
     ]
     .into_iter()
     .any(|error| code == (0x8007_0000 | error))
@@ -253,7 +254,7 @@ fn cloud_result(result: i32) -> io::Result<bool> {
 fn refuse_cloud(path: &Path, file: &File, roots: &[PathBuf]) -> io::Result<()> {
     use windows_sys::Win32::Storage::CloudFilters::{
         CF_SYNC_ROOT_BASIC_INFO, CF_SYNC_ROOT_INFO_BASIC,
-        CfGetSyncRootInfoByHandle,
+        CfGetSyncRootInfoByPath,
     };
     let meta = file.metadata()?;
     if overlaps_sync_root(path, roots) {
@@ -272,23 +273,37 @@ fn refuse_cloud(path: &Path, file: &File, roots: &[PathBuf]) -> io::Result<()> {
                                     reparse providers are protected",
         ));
     }
-    let mut info = CF_SYNC_ROOT_BASIC_INFO { SyncRootFileId: 0 };
-    // SAFETY: an attribute-only/no-follow live handle, correctly aligned
-    // output of exactly the requested size, and no optional length pointer.
-    let result = unsafe {
-        CfGetSyncRootInfoByHandle(
-            file.as_raw_handle(),
-            CF_SYNC_ROOT_INFO_BASIC,
-            (&raw mut info).cast(),
-            size_of::<CF_SYNC_ROOT_BASIC_INFO>() as u32,
-            std::ptr::null_mut(),
-        )
-    };
-    if cloud_result(result)? {
-        return Err(io::Error::other(
-            "a registered cloud-sync folder is \
+    // An ordinary hydrated child can return INVALID_FUNCTION even beneath
+    // a registered root. Ask every canonical ancestor too; an unsupported
+    // child must never hide a registered root higher up the same path.
+    for ancestor in path.ancestors() {
+        let inspected = inspection(ancestor)?;
+        let attributes = inspected.metadata()?.file_attributes();
+        if attributes & (EVICTED | FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+            return Err(io::Error::other(
+                "a cloud or unsupported reparse \
+                                        ancestor is protected",
+            ));
+        }
+        let wide = super::wide(ancestor, false)?;
+        let mut info = CF_SYNC_ROOT_BASIC_INFO { SyncRootFileId: 0 };
+        // SAFETY: fully qualified, NUL-terminated live path and a correctly
+        // aligned/sized output. Metadata checks above refuse hydration.
+        let result = unsafe {
+            CfGetSyncRootInfoByPath(
+                wide.as_ptr(),
+                CF_SYNC_ROOT_INFO_BASIC,
+                (&raw mut info).cast(),
+                size_of::<CF_SYNC_ROOT_BASIC_INFO>() as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        if cloud_result(result)? {
+            return Err(io::Error::other(
+                "a registered cloud-sync folder is \
                                     protected; use its provider to free space",
-        ));
+            ));
+        }
     }
     Ok(())
 }
@@ -312,10 +327,12 @@ mod tests {
     }
 
     #[test]
-    fn cloud_query_failure_never_becomes_permission_to_delete() {
+    fn unexpected_cloud_query_failure_never_permits_deletion() {
         assert!(cloud_result(0).expect("registered"));
         let not_cloud = i32::from_ne_bytes(0x8007_0178_u32.to_ne_bytes());
         assert!(!cloud_result(not_cloud).expect("ordinary"));
+        let unsupported = i32::from_ne_bytes(0x8007_0001_u32.to_ne_bytes());
+        assert!(!cloud_result(unsupported).expect("check every ancestor"));
         let denied = i32::from_ne_bytes(0x8007_0005_u32.to_ne_bytes());
         assert!(cloud_result(denied).is_err());
     }
@@ -402,7 +419,9 @@ mod tests {
             .expect("file");
         let _registered = RegisteredRoot::new(&root);
         let cancel = AtomicBool::new(false);
-        assert!(review_tree(&file, &cancel, REVIEW_ENTRY_LIMIT).is_err());
+        let error = review_tree(&file, &cancel, REVIEW_ENTRY_LIMIT)
+            .expect_err("registered root must be detected");
+        assert!(error.to_string().contains("protected"), "{error}");
         assert_eq!(
             fs::read(file).expect("survived"),
             b"must never reach the cloud as a deletion"
@@ -420,7 +439,9 @@ mod tests {
         let review = review_tree(&file, &cancel, REVIEW_ENTRY_LIMIT)
             .expect("ordinary before registration");
         let _registered = RegisteredRoot::new(&root);
-        assert!(remove_reviewed(&file, &review, &cancel, |_| {}).is_err());
+        let error = remove_reviewed(&file, &review, &cancel, |_| {})
+            .expect_err("new registered root must be detected");
+        assert!(error.to_string().contains("protected"), "{error}");
         assert_eq!(fs::read(file).expect("survived"), b"keep");
     }
 }

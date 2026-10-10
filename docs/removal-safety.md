@@ -72,10 +72,15 @@ targets. Partial errors say how many entries were already deleted. Failed
 and unattempted marks survive completion if their objects still exist.
 Worker startup failure or a disconnected worker channel ends with an error,
 rather than leaving the UI running forever. A process crash is not rollback.
+Multiple selected hardlinks to the same object can conflict with the
+preflight's own no-delete-sharing handles; refusal requires splitting that
+selection, rather than weakening the sharing contract.
 
 Registered Windows Cloud Files sync roots, known OneDrive environment roots,
 online-only attributes and unsupported non-link reparse providers are
-refused during preparation and checked again during removal. An unexpected
+refused during preparation and checked again during removal. Detection asks
+canonical ancestors too: an ordinary hydrated child can be non-cloud while
+its parent is a registered sync root. An unexpected
 cloud-status query error also refuses deletion. Native regression fixtures
 register only owned temporary roots and unregister them afterwards. They
 exercise fully local files and registration after review; they do not use a

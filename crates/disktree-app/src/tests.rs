@@ -402,7 +402,7 @@ fn enter_and_its_autorepeat_never_approve_permanent_deletion(
     mark_junk_for_review(&view, cx);
     press(cx, "enter");
     assert!(read(&view, cx, |app| app.confirm_open));
-    for key in ["enter", "ctrl-enter"] {
+    for key in ["enter", "ctrl-enter", "space"] {
         cx.simulate_event(gpui_kit::KeyDownEvent {
             keystroke: gpui_kit::Keystroke::parse(key).expect("key"),
             is_held: true,
@@ -458,6 +458,7 @@ fn cancelling_preparation_discards_its_later_result(cx: &mut TestAppContext) {
     assert!(!read(&view, cx, |app| app.preparing_delete));
     assert!(!read(&view, cx, |app| app.confirm_open));
     assert!(read(&view, cx, |app| app.confirm_plan.is_none()));
+    assert!(read(&view, cx, |app| app.notice.is_none()));
     assert!(read(&view, cx, |app| app.run.is_none()));
     assert!(temp.path().join("junk/blob.bin").exists());
 }
@@ -476,6 +477,37 @@ fn an_unapproved_confirmation_and_direct_start_never_delete(
     });
     assert!(read(&view, cx, |app| app.run.is_none()));
     assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+#[gpui_kit::test]
+fn repeated_confirmation_starts_only_one_worker(cx: &mut TestAppContext) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    mark_junk_for_review(&view, cx);
+    press(cx, "enter");
+    update(&view, cx, |app, cx| {
+        app.confirm_delete(cx);
+        let epoch = app.run_epoch;
+        app.confirm_delete(cx);
+        assert_eq!(app.run_epoch, epoch);
+        assert_eq!(epoch, 1);
+    });
+    let mut finished = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        finished = update(&view, cx, |app, cx| {
+            app.poll_removal_once(1, cx);
+            app.screen == Screen::Done
+        });
+        if finished {
+            break;
+        }
+    }
+    assert!(finished, "the single worker finished");
+    assert_eq!(read(&view, cx, |app| app.run_summary.removed), 1);
+    assert!(temp.path().join("keep/notes.txt").exists());
+    assert!(temp.path().join(".cache/blob.bin").exists());
 }
 
 #[cfg(windows)]

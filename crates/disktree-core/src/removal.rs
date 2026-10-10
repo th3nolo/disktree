@@ -1331,6 +1331,19 @@ mod worker_lifecycle_tests {
         assert!(matches!(handle.poll(), Some(RemovalEvent::Done { .. })));
         assert!(handle.poll().is_none());
     }
+
+    #[test]
+    fn an_idle_connected_worker_is_not_reported_as_lost() {
+        let (sender, events) = mpsc::channel();
+        let handle = RemovalHandle {
+            events,
+            cancel: Arc::new(AtomicBool::new(false)),
+            terminal: Cell::new(false),
+        };
+        assert!(handle.poll().is_none());
+        drop(sender);
+        assert!(matches!(handle.poll(), Some(RemovalEvent::Aborted { .. })));
+    }
 }
 
 impl RemovalHandle {

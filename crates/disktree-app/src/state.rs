@@ -2196,13 +2196,13 @@ impl Disktree {
                                     "The selection changed; review it again"
                                         .into(),
                                     Status::Warning,
-                                ))
+                                ));
                             }
                             Err(error) => {
                                 this.notice = Some((
                                     format!("Deletion refused: {error}"),
                                     Status::Warning,
-                                ))
+                                ));
                             }
                         }
                         cx.notify();
@@ -2240,6 +2240,9 @@ impl Disktree {
 
     /// The alert dialog's `Cancel`, or Escape.
     pub fn cancel_delete(&mut self, cx: &mut Context<'_, Self>) {
+        if self.preparing_delete {
+            self.notice = None;
+        }
         self.prepare_cancel.store(true, Ordering::Relaxed);
         self.prepare_epoch += 1;
         self.preparing_delete = false;
@@ -2537,6 +2540,7 @@ impl Disktree {
     pub fn can_start_over(&self) -> bool {
         self.screen == Screen::Explore
             && !self.confirm_open
+            && !self.preparing_delete
             && !self.volumes_open
     }
 
