@@ -121,6 +121,88 @@ fn review_stays_bound_to_the_root_that_was_displayed(cx: &mut TestAppContext) {
     assert!(temp.path().join("junk/blob.bin").exists());
 }
 
+/// The scan's file description cannot authorize a replacement directory.
+#[gpui_kit::test]
+fn a_file_replaced_by_a_directory_before_marking_is_refused(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let path = temp.path().join("keep/notes.txt");
+    let (view, cx) = view_over(temp.path(), cx);
+    let crumbs = read(&view, cx, |app| {
+        app.crumbs_for_path(&path).expect("scanned file")
+    });
+    std::fs::rename(&path, temp.path().join("original.txt")).expect("move");
+    std::fs::create_dir(&path).expect("replacement directory");
+    let sentinel = path.join("unmarked.txt");
+    std::fs::write(&sentinel, b"keep replacement contents").expect("write");
+
+    update(&view, cx, |app, cx| app.toggle_mark(&crumbs, cx));
+    draw(cx);
+    assert!(read(&view, cx, |app| app.marks.is_empty()));
+    assert!(read(&view, cx, |app| app.target_at(&crumbs).is_none()));
+    assert!(read(&view, cx, Disktree::plan).is_empty());
+    assert_eq!(
+        std::fs::read(&sentinel).expect("replacement sentinel"),
+        b"keep replacement contents"
+    );
+    assert!(temp.path().join("original.txt").exists());
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+/// A stale directory description must not claim a replacement file either.
+#[gpui_kit::test]
+fn a_directory_replaced_by_a_file_before_marking_is_refused(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let path = temp.path().join("junk");
+    let (view, cx) = view_over(temp.path(), cx);
+    let crumbs = read(&view, cx, |app| {
+        app.crumbs_for_path(&path).expect("scanned directory")
+    });
+    std::fs::rename(&path, temp.path().join("original")).expect("move");
+    std::fs::write(&path, b"keep replacement file").expect("write");
+
+    update(&view, cx, |app, cx| app.toggle_mark(&crumbs, cx));
+    draw(cx);
+    assert!(read(&view, cx, |app| app.marks.is_empty()));
+    assert!(read(&view, cx, Disktree::plan).is_empty());
+    assert_eq!(
+        std::fs::read(&path).expect("replacement file"),
+        b"keep replacement file"
+    );
+    assert!(temp.path().join("original/blob.bin").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
+/// Treemap weighting never changes the units of a removal projection.
+#[gpui_kit::test]
+fn marking_and_refreshing_in_files_mode_still_measure_bytes(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.set_mode(1, cx);
+        let crumbs = app
+            .crumbs_for_path(&temp.path().join("junk"))
+            .expect("directory");
+        app.toggle_mark(&crumbs, cx);
+        assert_eq!(app.plan().bytes(), 300_000);
+        app.set_mode(0, cx);
+        assert_eq!(app.plan().bytes(), 300_000);
+        app.set_mode(1, cx);
+        assert_eq!(app.plan().bytes(), 300_000);
+    });
+    draw(cx);
+    assert!(temp.path().join("junk/blob.bin").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
 #[gpui_kit::test]
 fn the_window_draws_a_treemap_with_tiles(cx: &mut TestAppContext) {
     cx.update(gpui_omarchy::init);
