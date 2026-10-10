@@ -2193,7 +2193,7 @@ mod tests {
         run(
             &plan,
             RemovalMode::Permanent,
-            TrashBackend::None,
+            TrashBackend::Unavailable,
             &AtomicBool::new(false),
             &sender,
         );
