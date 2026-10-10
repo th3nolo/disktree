@@ -43,7 +43,8 @@ impl Fixture {
         let plan = plan(&[marked], &self.root);
         assert_eq!(plan.targets.len(), 1, "{:?}", plan.blocked);
         assert!(plan.blocked.is_empty());
-        plan
+        plan.prepare_review(&AtomicBool::new(false))
+            .expect("review fixture")
     }
 
     fn assert_canaries(&self) {
@@ -100,8 +101,8 @@ fn a_junction_added_after_review_never_deletes_its_outside_contents() {
     fs::create_dir(&directory).expect("marked directory");
     fs::write(directory.join("selected.bin"), b"selected").expect("write");
     let plan = fixture.marked(&directory);
-    // The directory identity stays the same while another process adds links.
-    // Recursion must unlink each reparse point without following its target.
+    // The directory identity stays the same, but its reviewed membership
+    // changes. Refuse the target before deleting even its original child.
     for depth in 0..8 {
         let parent = directory.join(format!("level-{depth}"));
         fs::create_dir(&parent).expect("nested directory");
@@ -111,8 +112,11 @@ fn a_junction_added_after_review_never_deletes_its_outside_contents() {
         ));
     }
     let result = events(&plan, false);
-    assert_totals(&result, 1, 0);
-    assert!(!directory.exists());
+    assert_totals(&result, 0, 1);
+    assert_eq!(
+        fs::read(directory.join("selected.bin")).expect("survives"),
+        b"selected"
+    );
     fixture.assert_canaries();
 }
 
@@ -146,6 +150,9 @@ fn a_missing_target_does_not_expand_the_remaining_batch() {
     fs::write(&second, b"second").expect("write");
     let plan = plan(&[target(&first), target(&second)], &fixture.root);
     assert_eq!(plan.targets.len(), 2);
+    let plan = plan
+        .prepare_review(&AtomicBool::new(false))
+        .expect("review");
     let saved = fixture.root.join("saved-original.bin");
     fs::rename(&first, &saved).expect("move first after review");
 
@@ -248,6 +255,9 @@ fn a_generated_batch_changes_only_the_explicitly_selected_files() {
     let plan = plan(&targets, &fixture.root);
     assert_eq!(plan.targets.len(), 10);
     assert_eq!(plan.blocked.len(), 2);
+    let plan = plan
+        .prepare_review(&AtomicBool::new(false))
+        .expect("review");
     assert_totals(&events(&plan, false), 10, 0);
     for (path, contents, selected) in expected {
         if selected {
@@ -288,12 +298,12 @@ fn a_locked_child_is_found_before_any_sibling_is_deleted() {
         .expect("listing")
         .map(|entry| entry.expect("entry").path())
         .collect::<Vec<_>>();
+    let plan = fixture.marked(&directory);
     let locked = OpenOptions::new()
         .read(true)
         .share_mode(0)
         .open(paths.last().expect("last child"))
         .expect("exclusive lock");
-    let plan = fixture.marked(&directory);
     assert_totals(&events(&plan, false), 0, 1);
     drop(locked);
     for path in &paths {
@@ -302,5 +312,145 @@ fn a_locked_child_is_found_before_any_sibling_is_deleted() {
             b"keep on failure"
         );
     }
+    fixture.assert_canaries();
+}
+
+#[test]
+fn a_new_descendant_after_confirmation_refuses_the_whole_target() {
+    let fixture = Fixture::new();
+    let directory = fixture.root.join("marked");
+    fs::create_dir_all(directory.join("nested")).expect("directories");
+    let original = directory.join("nested/original.bin");
+    fs::write(&original, b"reviewed").expect("original");
+    let plan = fixture.marked(&directory);
+    let added = directory.join("nested/new.bin");
+    fs::write(&added, b"not approved").expect("late addition");
+    assert_totals(&events(&plan, false), 0, 1);
+    assert_eq!(fs::read(original).expect("original survived"), b"reviewed");
+    assert_eq!(fs::read(added).expect("new file survived"), b"not approved");
+    fixture.assert_canaries();
+}
+
+#[test]
+fn changed_file_metadata_after_confirmation_refuses_all_its_siblings() {
+    let fixture = Fixture::new();
+    let directory = fixture.root.join("marked");
+    fs::create_dir(&directory).expect("directory");
+    let first = directory.join("first.bin");
+    let changed = directory.join("last.bin");
+    fs::write(&first, b"reviewed").expect("first");
+    fs::write(&changed, b"reviewed").expect("last");
+    let plan = fixture.marked(&directory);
+    fs::write(&changed, b"changed contents with a different length")
+        .expect("change");
+    assert_totals(&events(&plan, false), 0, 1);
+    assert_eq!(fs::read(first).expect("first survived"), b"reviewed");
+    assert_eq!(
+        fs::read(changed).expect("changed survived"),
+        b"changed contents with a different length"
+    );
+    fixture.assert_canaries();
+}
+
+#[test]
+fn replaced_descendant_after_confirmation_refuses_the_target() {
+    let fixture = Fixture::new();
+    let directory = fixture.root.join("marked");
+    fs::create_dir(&directory).expect("directory");
+    let file = directory.join("file.bin");
+    fs::write(&file, b"original").expect("file");
+    let plan = fixture.marked(&directory);
+    fs::rename(&file, fixture.root.join("original.bin")).expect("move");
+    fs::write(&file, b"replacement").expect("replace");
+    assert_totals(&events(&plan, false), 0, 1);
+    assert_eq!(
+        fs::read(file).expect("replacement survived"),
+        b"replacement"
+    );
+    fixture.assert_canaries();
+}
+
+#[test]
+fn cancellation_during_a_directory_stops_before_the_next_entry() {
+    let fixture = Fixture::new();
+    let directory = fixture.root.join("marked");
+    fs::create_dir(&directory).expect("directory");
+    let files = (0..8)
+        .map(|index| directory.join(format!("{index}.bin")))
+        .collect::<Vec<_>>();
+    for file in &files {
+        fs::write(file, b"reviewed").expect("file");
+    }
+    let cancel = AtomicBool::new(false);
+    let review = crate::windows::review_tree(
+        &directory,
+        &cancel,
+        crate::windows::REVIEW_ENTRY_LIMIT,
+    )
+    .expect("review");
+    let mut deleted = Vec::new();
+    let error =
+        crate::windows::remove_reviewed(&directory, &review, &cancel, |path| {
+            deleted.push(path.to_path_buf());
+            cancel.store(true, Ordering::Relaxed);
+        })
+        .expect_err("cancelled between children");
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    assert!(
+        error
+            .to_string()
+            .contains("1 reviewed entries already deleted")
+    );
+    assert_eq!(deleted.len(), 1);
+    for file in &files {
+        if deleted.contains(file) {
+            assert!(!file.exists());
+        } else {
+            assert_eq!(fs::read(file).expect("remaining child"), b"reviewed");
+        }
+    }
+    assert!(directory.exists());
+    fixture.assert_canaries();
+}
+
+#[test]
+fn a_child_added_during_deletion_is_never_added_to_the_approved_list() {
+    let fixture = Fixture::new();
+    let directory = fixture.root.join("marked");
+    fs::create_dir(&directory).expect("directory");
+    fs::write(directory.join("reviewed.bin"), b"reviewed").expect("file");
+    let cancel = AtomicBool::new(false);
+    let review = crate::windows::review_tree(
+        &directory,
+        &cancel,
+        crate::windows::REVIEW_ENTRY_LIMIT,
+    )
+    .expect("review");
+    let added = directory.join("not-reviewed.bin");
+    let error =
+        crate::windows::remove_reviewed(&directory, &review, &cancel, |_| {
+            fs::write(&added, b"never approved").expect("late file");
+        })
+        .expect_err("directory is no longer empty");
+    assert!(
+        error
+            .to_string()
+            .contains("1 reviewed entries already deleted")
+    );
+    assert_eq!(
+        fs::read(added).expect("late file survived"),
+        b"never approved"
+    );
+    fixture.assert_canaries();
+}
+
+#[test]
+fn an_unprepared_plan_never_starts_permanent_windows_deletion() {
+    let fixture = Fixture::new();
+    let file = fixture.root.join("selected.bin");
+    fs::write(&file, b"unapproved").expect("file");
+    let plan = plan(&[target(&file)], &fixture.root);
+    assert_totals(&events(&plan, false), 0, 1);
+    assert_eq!(fs::read(file).expect("not deleted"), b"unapproved");
     fixture.assert_canaries();
 }

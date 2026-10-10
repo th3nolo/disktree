@@ -8,6 +8,7 @@ use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use disktree_core::access::file_table_readable;
@@ -319,6 +320,7 @@ pub struct RunSummary {
     pub removed: u64,
     pub bytes: u64,
     pub failed: usize,
+    pub entries: u64,
 }
 
 /// Everything the app knows and everything it can do.
@@ -375,6 +377,11 @@ pub struct Disktree {
     /// The permanent-deletion alert dialog is open. Trash needs no dialog: it
     /// is reversible, so it commits directly.
     pub confirm_open: bool,
+    /// The exact list shown in the final confirmation, never rebuilt there.
+    pub confirm_plan: Option<Plan>,
+    pub preparing_delete: bool,
+    prepare_cancel: Arc<AtomicBool>,
+    prepare_epoch: u64,
     /// Focus owner for the alert dialog while it is open.
     pub confirm_focus: FocusHandle,
     /// Focus to move on the next occasion a window is in hand. Key handling
@@ -512,6 +519,10 @@ impl Disktree {
             },
             trash_backend,
             confirm_open: false,
+            confirm_plan: None,
+            preparing_delete: false,
+            prepare_cancel: Arc::new(AtomicBool::new(false)),
+            prepare_epoch: 0,
             confirm_focus: cx.focus_handle(),
             focus_request: None,
             window_title: String::new(),
@@ -2138,14 +2149,66 @@ impl Disktree {
     /// The review screen's commit: move to the trash at once, or ask first for
     /// a permanent deletion, which cannot be undone.
     pub fn commit(&mut self, cx: &mut Context<'_, Self>) {
-        if self.plan().is_empty() {
+        if self.confirm_open || self.preparing_delete || self.run.is_some() {
+            return;
+        }
+        let plan = self.plan();
+        if plan.is_empty() {
             return;
         }
         match self.removal_mode {
             RemovalMode::Trash => self.begin_removal(cx),
             RemovalMode::Permanent => {
-                self.confirm_open = true;
-                self.focus_request = Some(FocusTarget::Dialog);
+                self.preparing_delete = true;
+                self.prepare_epoch += 1;
+                let epoch = self.prepare_epoch;
+                let cancel = Arc::new(AtomicBool::new(false));
+                self.prepare_cancel = Arc::clone(&cancel);
+                self.notice = Some((
+                    "Checking the deletion list; Escape cancels".into(),
+                    Status::Neutral,
+                ));
+                let task = cx
+                    .background_executor()
+                    .spawn(async move { plan.prepare_review(&cancel) });
+                cx.spawn(async move |this, cx| {
+                    let result = task.await;
+                    let _ = this.update(cx, |this, cx| {
+                        if epoch != this.prepare_epoch {
+                            return;
+                        }
+                        this.preparing_delete = false;
+                        match result {
+                            Ok(plan)
+                                if this.screen == Screen::Review
+                                    && this.removal_mode
+                                        == RemovalMode::Permanent
+                                    && plan.root == this.root_path
+                                    && plan.targets == this.plan().targets =>
+                            {
+                                this.confirm_plan = Some(plan);
+                                this.confirm_open = true;
+                                this.focus_request = Some(FocusTarget::Dialog);
+                                this.notice = None;
+                            }
+                            Ok(_) => {
+                                this.notice = Some((
+                                    "The selection changed; review it again"
+                                        .into(),
+                                    Status::Warning,
+                                ))
+                            }
+                            Err(error) => {
+                                this.notice = Some((
+                                    format!("Deletion refused: {error}"),
+                                    Status::Warning,
+                                ))
+                            }
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
                 cx.notify();
             }
         }
@@ -2153,13 +2216,34 @@ impl Disktree {
 
     /// The alert dialog's `Delete`.
     pub fn confirm_delete(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.confirm_open {
+            return;
+        }
+        let Some(plan) = self.confirm_plan.take() else {
+            return;
+        };
         self.confirm_open = false;
         self.focus_request = Some(FocusTarget::Root);
-        self.begin_removal(cx);
+        if self.removal_mode != RemovalMode::Permanent
+            || plan.root != self.root_path
+            || plan.targets != self.plan().targets
+        {
+            self.notice = Some((
+                "The selection changed; review it again".into(),
+                Status::Warning,
+            ));
+            cx.notify();
+            return;
+        }
+        self.start_removal(plan, cx);
     }
 
     /// The alert dialog's `Cancel`, or Escape.
     pub fn cancel_delete(&mut self, cx: &mut Context<'_, Self>) {
+        self.prepare_cancel.store(true, Ordering::Relaxed);
+        self.prepare_epoch += 1;
+        self.preparing_delete = false;
+        self.confirm_plan = None;
         self.confirm_open = false;
         self.focus_request = Some(FocusTarget::Root);
         cx.notify();
@@ -2209,7 +2293,18 @@ impl Disktree {
     }
 
     pub fn begin_removal(&mut self, cx: &mut Context<'_, Self>) {
+        // Permanent deletion must consume an approved plan through the dialog.
+        if self.removal_mode == RemovalMode::Permanent {
+            return;
+        }
         let plan = self.plan();
+        self.start_removal(plan, cx);
+    }
+
+    fn start_removal(&mut self, plan: Plan, cx: &mut Context<'_, Self>) {
+        if self.run.is_some() {
+            return;
+        }
         if plan.is_empty() {
             self.notice = Some(("nothing is marked".into(), Status::Warning));
             cx.notify();
@@ -2292,10 +2387,20 @@ impl Disktree {
                     if outcome.is_ok() {
                         self.run_summary.removed += 1;
                         self.run_summary.bytes += bytes;
+                        self.marks.remove(&path);
                     } else {
                         self.run_summary.failed += 1;
                     }
                     self.run_log.push((path, outcome));
+                }
+                RemovalEvent::EntryRemoved { path } => {
+                    self.run_summary.entries += 1;
+                    self.marks.remove(&path);
+                }
+                RemovalEvent::Aborted { reason } => {
+                    self.run_summary.failed += 1;
+                    self.run_log.push((PathBuf::new(), Err(reason)));
+                    finished = true;
                 }
                 RemovalEvent::Done {
                     removed,
@@ -2311,7 +2416,6 @@ impl Disktree {
         }
         if finished {
             self.run = None;
-            self.marks.clear();
             self.screen = Screen::Done;
             // The tree on screen is now wrong; start over rather than leaving
             // numbers that include what was just removed.
@@ -2568,6 +2672,16 @@ impl Disktree {
         let shift = event.keystroke.modifiers.shift;
         let alt = event.keystroke.modifiers.alt;
 
+        if self.preparing_delete {
+            if key == "escape" {
+                self.cancel_delete(cx);
+            }
+            return;
+        }
+        if event.is_held && matches!(key, "enter" | "space" | "x" | "p" | "t") {
+            return;
+        }
+
         // The alert dialog owns Enter and Escape while it is open; a key that
         // bubbles up to here must not also act on the screen behind it.
         if self.confirm_open {
@@ -2656,7 +2770,12 @@ impl Disktree {
                 {
                     run.cancel();
                     self.notice = Some((
-                        "stopping after the current item".into(),
+                        if cfg!(windows) {
+                            "stopping before the next entry"
+                        } else {
+                            "stopping after the current item"
+                        }
+                        .into(),
                         Status::Warning,
                     ));
                     cx.notify();

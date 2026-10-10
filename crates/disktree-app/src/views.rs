@@ -43,6 +43,7 @@ pub fn root(
     window: &mut Window,
     cx: &mut Context<'_, Disktree>,
 ) -> Stateful<Div> {
+    app.apply_focus(window, cx);
     let theme = cx.omarchy().clone();
     let body = match app.screen {
         Screen::Explore => explore(app, window, cx),
@@ -88,6 +89,18 @@ pub fn root(
                 }
             },
         ))
+        .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+            if this.confirm_open && event.keystroke.key == "enter" {
+                // Plain Enter and its autorepeat cannot approve deletion.
+                // Confirmation needs a fresh Ctrl+Enter or the Delete button.
+                cx.stop_propagation();
+                cx.prevent_default();
+                if !event.is_held && event.keystroke.modifiers.control {
+                    this.confirm_delete(cx);
+                }
+                this.apply_focus(window, cx);
+            }
+        }))
         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
             if this.zoom_interface(event, window) {
                 cx.notify();
@@ -257,7 +270,7 @@ fn delete_dialog(
     app: &Disktree,
     cx: &mut Context<'_, Disktree>,
 ) -> impl IntoElement {
-    let plan = app.plan();
+    let plan = app.confirm_plan.clone().unwrap_or_default();
     let title = match plan.targets.as_slice() {
         [only] => format!(
             "Delete \u{201c}{}\u{201d} permanently?",
@@ -270,8 +283,16 @@ fn delete_dialog(
     } else {
         "Cancel and keep a copy if you might need them again."
     };
+    let entries = plan.reviewed_entries().map_or_else(String::new, |count| {
+        format!(" {count} files, folders and links were checked.")
+    });
+    let location = plan.targets.first().map_or_else(String::new, |target| {
+        format!(" First selection: {}.", target.path.display())
+    });
     let body = format!(
-        "This frees {}. Deleted files can\u{2019}t be recovered. {advice}",
+        "This projects {}.{entries}{location} Deleted files can\u{2019}t be \
+         recovered. Errors or cancellation can leave a partial deletion. \
+         {advice} Click Delete or press Ctrl+Enter to confirm.",
         human_bytes(plan.bytes())
     );
     let confirm = cx.entity().downgrade();
@@ -324,7 +345,7 @@ fn delete_dialog(
         .open(true)
         .on_ok(move |_, window, cx| {
             let _ = confirm.update(cx, |this, cx| {
-                this.confirm_delete(cx);
+                this.cancel_delete(cx);
                 this.apply_focus(window, cx);
             });
             false
@@ -2919,7 +2940,9 @@ fn commit_controls(
             ButtonVariant::Danger,
         ),
     };
-    let unavailable = plan.is_empty()
+    let unavailable = app.preparing_delete
+        || app.confirm_open
+        || plan.is_empty()
         || (app.removal_mode == RemovalMode::Trash
             && !app.trash_backend.is_available());
 
@@ -3098,7 +3121,15 @@ fn running(app: &Disktree, cx: &gpui_kit::Context<'_, Disktree>) -> Div {
                 .py(space::SM)
                 .border_t_1()
                 .border_color(theme.divider())
-                .child(widgets::hint("esc", "stop after the current item", cx)),
+                .child(widgets::hint(
+                    "esc",
+                    if cfg!(windows) {
+                        "stop before the next entry"
+                    } else {
+                        "stop after the current item"
+                    },
+                    cx,
+                )),
         )
 }
 
@@ -3166,6 +3197,9 @@ fn done(app: &Disktree, cx: &gpui_kit::Context<'_, Disktree>) -> Div {
                     },
                     cx,
                 ))
+                .when(cfg!(windows), |this| this.child(widgets::stat(
+                    "entries deleted", summary.entries.to_string(), cx,
+                )))
                 .children(measured.map(|delta| {
                     widgets::stat_colored(
                         "volume freed",

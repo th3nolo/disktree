@@ -15,13 +15,14 @@
 //!   Elsewhere it is `trash-put`, then `gio trash`, then a built-in XDG
 //!   implementation. The backend is detected once and named in the UI.
 
+use std::cell::Cell;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
 use crate::tree::NodeKind;
@@ -166,13 +167,96 @@ pub struct Plan {
     pub root: PathBuf,
     /// Kept from planning; a new resolution cannot authorize a new root.
     root_snapshot: Option<RootSnapshot>,
+    #[cfg(windows)]
+    review: Option<Arc<ReviewedPlan>>,
     /// Bytes the targets free on `root`'s volume; see [`Self::reclaim`].
     reclaim: u64,
     /// Bytes the targets free on other volumes; see [`Self::foreign`].
     foreign: u64,
 }
 
+#[cfg(windows)]
+#[derive(Debug)]
+struct ReviewedPlan {
+    targets: Vec<Target>,
+    trees: Vec<crate::windows::ReviewedTree>,
+}
+
 impl Plan {
+    /// Capture the Windows entries the final confirmation authorizes. This
+    /// walks metadata only, on a background task; no contents are fetched.
+    pub fn prepare_review(self, cancel: &AtomicBool) -> io::Result<Self> {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "cancelled",
+            ));
+        }
+        #[cfg(windows)]
+        {
+            let saved = self.root_snapshot.as_ref().ok_or_else(|| {
+                io::Error::other("the scanned root cannot be verified")
+            })?;
+            if !saved.matches(&self.root) {
+                return Err(io::Error::other("the scanned root changed"));
+            }
+            let mut trees = Vec::new();
+            let mut remaining = crate::windows::REVIEW_ENTRY_LIMIT;
+            for target in &self.targets {
+                let guard = crate::windows::pin_parent(
+                    &target.path,
+                    &self.root,
+                    Some(saved.identity),
+                )?;
+                let tree = crate::windows::review_tree(
+                    &guard.path,
+                    cancel,
+                    remaining,
+                )?;
+                if tree.identity() != target.identity {
+                    return Err(io::Error::other("the marked entry changed"));
+                }
+                if tree.is_directory() != target.is_dir {
+                    return Err(io::Error::other(
+                        "the marked entry kind changed",
+                    ));
+                }
+                remaining -= tree.len();
+                trees.push(tree);
+            }
+            let review = ReviewedPlan {
+                targets: self.targets.clone(),
+                trees,
+            };
+            Ok(Self {
+                review: Some(Arc::new(review)),
+                ..self
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(self)
+        }
+    }
+
+    /// Descendants as well as top-level selections; shown in confirmation.
+    pub fn reviewed_entries(&self) -> Option<usize> {
+        #[cfg(windows)]
+        {
+            self.review.as_ref().map(|review| {
+                review
+                    .trees
+                    .iter()
+                    .map(crate::windows::ReviewedTree::len)
+                    .sum()
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+
     pub fn bytes(&self) -> u64 {
         self.targets.iter().map(|target| target.bytes).sum()
     }
@@ -1173,6 +1257,14 @@ pub enum RemovalEvent {
         bytes: u64,
         outcome: Result<(), String>,
     },
+    /// One Windows entry was actually deleted, including partial folders.
+    EntryRemoved {
+        path: PathBuf,
+    },
+    /// The worker stopped without a normal completion; never an idle tick.
+    Aborted {
+        reason: String,
+    },
     Done {
         removed: u64,
         bytes: u64,
@@ -1185,6 +1277,7 @@ pub enum RemovalEvent {
 pub struct RemovalHandle {
     events: Receiver<RemovalEvent>,
     cancel: Arc<AtomicBool>,
+    terminal: Cell<bool>,
 }
 
 #[cfg(test)]
@@ -1197,6 +1290,7 @@ mod worker_lifecycle_tests {
         let handle = RemovalHandle {
             events,
             cancel: Arc::new(AtomicBool::new(false)),
+            terminal: Cell::new(false),
         };
         drop(sender);
         assert!(
@@ -1204,18 +1298,71 @@ mod worker_lifecycle_tests {
             "disconnection is not an idle worker"
         );
     }
-}
 
+    #[test]
+    fn failure_to_start_a_worker_reports_a_terminal_error_once() {
+        let handle =
+            spawn_worker(Plan::default(), RemovalMode::Permanent, |_| {
+                Err(io::Error::other("injected thread creation failure"))
+            });
+        assert!(
+            matches!(handle.poll(), Some(RemovalEvent::Aborted { reason })
+            if reason.contains("could not start")
+                && reason.contains("injected thread creation failure"))
+        );
+        assert!(handle.poll().is_none());
+    }
+
+    #[test]
+    fn normal_completion_does_not_become_a_lost_worker_error() {
+        let (sender, events) = mpsc::channel();
+        sender
+            .send(RemovalEvent::Done {
+                removed: 0,
+                bytes: 0,
+                failed: 0,
+            })
+            .expect("completion");
+        drop(sender);
+        let handle = RemovalHandle {
+            events,
+            cancel: Arc::new(AtomicBool::new(false)),
+            terminal: Cell::new(false),
+        };
+        assert!(matches!(handle.poll(), Some(RemovalEvent::Done { .. })));
+        assert!(handle.poll().is_none());
+    }
+}
 
 impl RemovalHandle {
     /// Take the next event, if one has arrived.
     pub fn poll(&self) -> Option<RemovalEvent> {
-        // Empty and Disconnected mean the same thing to the caller: there is
-        // nothing more to do this tick.
-        self.events.try_recv().ok()
+        if self.terminal.get() {
+            return None;
+        }
+        match self.events.try_recv() {
+            Ok(event) => {
+                if matches!(
+                    event,
+                    RemovalEvent::Done { .. } | RemovalEvent::Aborted { .. }
+                ) {
+                    self.terminal.set(true);
+                }
+                Some(event)
+            }
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                self.terminal.set(true);
+                Some(RemovalEvent::Aborted {
+                    reason: "the removal worker ended unexpectedly; some \
+                             entries may already have been deleted"
+                        .into(),
+                })
+            }
+        }
     }
 
-    /// Stop before the next target starts.
+    /// Stop before the next entry on Windows, or next target elsewhere.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
@@ -1223,6 +1370,19 @@ impl RemovalHandle {
 
 /// Start removing the plan's targets on a worker thread.
 pub fn spawn(plan: Plan, mode: RemovalMode) -> RemovalHandle {
+    spawn_worker(plan, mode, |worker| {
+        thread::Builder::new()
+            .name("disktree-remove".into())
+            .spawn(worker)
+            .map(|_| ())
+    })
+}
+
+fn spawn_worker(
+    plan: Plan,
+    mode: RemovalMode,
+    start: impl FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<()>,
+) -> RemovalHandle {
     let (sender, events) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = Arc::clone(&cancel);
@@ -1232,23 +1392,21 @@ pub fn spawn(plan: Plan, mode: RemovalMode) -> RemovalHandle {
         TrashBackend::Unavailable
     };
 
-    let worker = thread::Builder::new()
-        .name("disktree-remove".into())
-        .spawn({
-            let sender = sender.clone();
-            move || run(&plan, mode, backend, &worker_cancel, &sender)
-        });
+    let worker = start(Box::new({
+        let sender = sender.clone();
+        move || run(&plan, mode, backend, &worker_cancel, &sender)
+    }));
     if let Err(error) = worker {
-        let _ = sender.send(RemovalEvent::Item {
-            path: PathBuf::new(),
-            bytes: 0,
-            outcome: Err(format!(
-                "could not start the removal worker: {error}"
-            )),
+        let _ = sender.send(RemovalEvent::Aborted {
+            reason: format!("could not start the removal worker: {error}"),
         });
     }
 
-    RemovalHandle { events, cancel }
+    RemovalHandle {
+        events,
+        cancel,
+        terminal: Cell::new(false),
+    }
 }
 
 fn run(
@@ -1321,7 +1479,7 @@ fn run(
         let outcome = if let Some(reason) = reason {
             Err(io::Error::other(reason))
         } else {
-            perform_removal(target, plan, mode, backend)
+            perform_removal(target, plan, mode, backend, cancel, sender)
         };
         if outcome.is_ok() {
             removed += 1;
@@ -1361,6 +1519,8 @@ fn perform_removal(
     plan: &Plan,
     mode: RemovalMode,
     backend: TrashBackend,
+    _cancel: &AtomicBool,
+    _sender: &mpsc::Sender<RemovalEvent>,
 ) -> io::Result<()> {
     match mode {
         RemovalMode::Permanent => remove_permanently(&target.path, &plan.root),
@@ -1374,6 +1534,8 @@ fn perform_removal(
     plan: &Plan,
     mode: RemovalMode,
     backend: TrashBackend,
+    cancel: &AtomicBool,
+    sender: &mpsc::Sender<RemovalEvent>,
 ) -> io::Result<()> {
     let saved = plan.root_snapshot.as_ref().ok_or_else(|| {
         io::Error::other("the scanned root cannot be verified")
@@ -1387,11 +1549,32 @@ fn perform_removal(
         return Err(io::Error::other("the scanned root changed"));
     }
     match mode {
-        RemovalMode::Permanent => crate::windows::remove_guarded(
-            &guard.path,
-            target.identity,
-            Some(target.is_dir),
-        ),
+        RemovalMode::Permanent => {
+            let review = plan
+                .review
+                .as_ref()
+                .filter(|review| review.targets == plan.targets)
+                .ok_or_else(|| {
+                    io::Error::other(
+                        "the deletion list was not prepared for confirmation",
+                    )
+                })?;
+            let index = plan
+                .targets
+                .iter()
+                .position(|item| item == target)
+                .ok_or_else(|| io::Error::other("unreviewed target"))?;
+            crate::windows::remove_reviewed(
+                &guard.path,
+                &review.trees[index],
+                cancel,
+                |path| {
+                    let _ = sender.send(RemovalEvent::EntryRemoved {
+                        path: path.to_path_buf(),
+                    });
+                },
+            )
+        }
         RemovalMode::Trash => {
             if target.identity.is_some()
                 && entry_identity(&guard.path) != target.identity
@@ -2984,6 +3167,8 @@ mod tests {
     fn a_removal_run_reports_every_item_and_a_total() {
         let temp = tree();
         let root = temp.path();
+        fs::write(root.join("absent"), b"reviewed then missing")
+            .expect("write");
         let plan = plan(
             &[
                 target(&root.join("a/b"), 0),
@@ -2994,6 +3179,10 @@ mod tests {
         );
         assert_eq!(plan.targets.len(), 3);
 
+        let plan = plan
+            .prepare_review(&AtomicBool::new(false))
+            .expect("reviewed fixture");
+        fs::remove_file(root.join("absent")).expect("disappear after review");
         let handle = spawn(plan, RemovalMode::Permanent);
         let mut events = Vec::new();
         for _ in 0..2000 {
