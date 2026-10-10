@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use disktree_core::removal::{RemovalMode, entry_identity};
+use disktree_core::removal::{RemovalMode, TrashBackend, entry_identity};
 use disktree_core::scan::{ScanOptions, scan};
 use disktree_core::space::{SpaceInfo, Volume};
 use disktree_core::treemap::Tile;
@@ -119,6 +119,88 @@ fn review_stays_bound_to_the_root_that_was_displayed(cx: &mut TestAppContext) {
     assert!(root.join("notes.txt").exists());
     assert!(temp.path().join("original/notes.txt").exists());
     assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+/// The scan's file description cannot authorize a replacement directory.
+#[gpui_kit::test]
+fn a_file_replaced_by_a_directory_before_marking_is_refused(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let path = temp.path().join("keep/notes.txt");
+    let (view, cx) = view_over(temp.path(), cx);
+    let crumbs = read(&view, cx, |app| {
+        app.crumbs_for_path(&path).expect("scanned file")
+    });
+    std::fs::rename(&path, temp.path().join("original.txt")).expect("move");
+    std::fs::create_dir(&path).expect("replacement directory");
+    let sentinel = path.join("unmarked.txt");
+    std::fs::write(&sentinel, b"keep replacement contents").expect("write");
+
+    update(&view, cx, |app, cx| app.toggle_mark(&crumbs, cx));
+    draw(cx);
+    assert!(read(&view, cx, |app| app.marks.is_empty()));
+    assert!(read(&view, cx, |app| app.target_at(&crumbs).is_none()));
+    assert!(read(&view, cx, Disktree::plan).is_empty());
+    assert_eq!(
+        std::fs::read(&sentinel).expect("replacement sentinel"),
+        b"keep replacement contents"
+    );
+    assert!(temp.path().join("original.txt").exists());
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+/// A stale directory description must not claim a replacement file either.
+#[gpui_kit::test]
+fn a_directory_replaced_by_a_file_before_marking_is_refused(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let path = temp.path().join("junk");
+    let (view, cx) = view_over(temp.path(), cx);
+    let crumbs = read(&view, cx, |app| {
+        app.crumbs_for_path(&path).expect("scanned directory")
+    });
+    std::fs::rename(&path, temp.path().join("original")).expect("move");
+    std::fs::write(&path, b"keep replacement file").expect("write");
+
+    update(&view, cx, |app, cx| app.toggle_mark(&crumbs, cx));
+    draw(cx);
+    assert!(read(&view, cx, |app| app.marks.is_empty()));
+    assert!(read(&view, cx, Disktree::plan).is_empty());
+    assert_eq!(
+        std::fs::read(&path).expect("replacement file"),
+        b"keep replacement file"
+    );
+    assert!(temp.path().join("original/blob.bin").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
+/// Treemap weighting never changes the units of a removal projection.
+#[gpui_kit::test]
+fn marking_and_refreshing_in_files_mode_still_measure_bytes(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.set_mode(1, cx);
+        let crumbs = app
+            .crumbs_for_path(&temp.path().join("junk"))
+            .expect("directory");
+        app.toggle_mark(&crumbs, cx);
+        assert_eq!(app.plan().bytes(), 300_000);
+        app.set_mode(0, cx);
+        assert_eq!(app.plan().bytes(), 300_000);
+        app.set_mode(1, cx);
+        assert_eq!(app.plan().bytes(), 300_000);
+    });
+    draw(cx);
+    assert!(temp.path().join("junk/blob.bin").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
 }
 
 #[gpui_kit::test]
@@ -866,11 +948,57 @@ fn the_trash_is_the_default_when_there_is_one(cx: &mut TestAppContext) {
     let (mode, available) = read(&view, cx, |app| {
         (app.removal_mode, app.trash_backend.is_available())
     });
-    if available {
+    if available || cfg!(windows) {
         assert_eq!(mode, RemovalMode::Trash);
     } else {
         assert_eq!(mode, RemovalMode::Permanent);
     }
+}
+
+/// A disabled trash stays blocked through keys; choosing permanent deletion
+/// still opens a cancellable confirmation rather than starting a worker.
+#[gpui_kit::test]
+fn disabled_recycling_never_promotes_a_commit_to_permanent_deletion(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.trash_backend = TrashBackend::RecycleBin;
+        app.removal_mode = RemovalMode::Trash;
+        let crumbs = app
+            .crumbs_for_path(&temp.path().join("junk"))
+            .expect("node");
+        app.toggle_mark(&crumbs, cx);
+        app.screen = Screen::Review;
+        cx.notify();
+    });
+    draw(cx);
+
+    press(cx, "enter");
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+    assert_eq!(read(&view, cx, |app| app.removal_mode), RemovalMode::Trash);
+    assert!(!read(&view, cx, |app| app.confirm_open));
+    assert!(read(&view, cx, |app| app.run.is_none()));
+    assert_eq!(read(&view, cx, |app| app.marks.len()), 1);
+    assert!(read(&view, cx, |app| {
+        app.notice
+            .as_ref()
+            .is_some_and(|(text, _)| text.contains("Recycling is disabled"))
+    }));
+
+    press(cx, "p");
+    press(cx, "enter");
+    assert!(read(&view, cx, |app| app.confirm_open));
+    assert!(read(&view, cx, |app| app.run.is_none()));
+    assert!(temp.path().join("junk/blob.bin").exists());
+    press(cx, "escape");
+    assert!(!read(&view, cx, |app| app.confirm_open));
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+    assert!(read(&view, cx, |app| app.run.is_none()));
+    assert!(temp.path().join("junk/blob.bin").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
 }
 
 /// `ctrl =` / `ctrl -` / `ctrl 0` change the window's rem, which every size

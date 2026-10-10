@@ -334,8 +334,10 @@ The same program, with Windows' answers to the questions above:
   panel offers **Restart as Administrator**, which reopens the same folder
   and options through the UAC prompt; during a widening scan, the wider
   folder being scanned.
-- **Move to trash** is the Recycle Bin, through the shell, which asks
-  before destroying anything it cannot recycle.
+- **Move to trash** is disabled in this personal fork because the shell
+  could recycle a different file after its identity was checked. Removal
+  starts blocked; **Delete permanently** must be chosen explicitly and
+  confirmed. There is no automatic fallback from recycling to deletion.
 - **Refused besides the rules below:** Windows, Program Files and
   ProgramData, what Windows keeps at the top of its drive (System Volume
   Information, Recovery, Boot, and the page and hibernation files, which

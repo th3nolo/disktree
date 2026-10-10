@@ -10,10 +10,10 @@
 //!   implemented here rather than by shelling out, so no path ever reaches a
 //!   shell and no filename can be misread as an option.
 //! * [`RemovalMode::Trash`] — move to the desktop trash. On macOS that is
-//!   always the system Trash, through `NSFileManager`, and on Windows the
-//!   Recycle Bin. Elsewhere it is `trash-put`, then `gio trash`, then a
-//!   built-in XDG implementation. The backend is detected once and named in
-//!   the UI so the user knows what actually happens.
+//!   always the system Trash, through `NSFileManager`. Windows recycling is
+//!   refused because the shell cannot preserve the marked entry's identity.
+//!   Elsewhere it is `trash-put`, then `gio trash`, then a built-in XDG
+//!   implementation. The backend is detected once and named in the UI.
 
 use std::fs;
 use std::io;
@@ -23,6 +23,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
+
+use crate::tree::NodeKind;
 
 /// One path the user asked to remove.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,6 +40,46 @@ pub struct Target {
 
 /// A full file id and its volume: Windows `ReFS` needs all 128 id bits.
 pub type EntryIdentity = (u64, u128);
+
+/// Identity and kind of one entry, observed without following its final link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EntrySnapshot {
+    pub identity: EntryIdentity,
+    pub kind: NodeKind,
+}
+
+/// Capture both fields from the same metadata read or opened Windows handle.
+#[cfg(unix)]
+pub fn entry_snapshot(path: &Path) -> Option<EntrySnapshot> {
+    use std::os::unix::fs::MetadataExt as _;
+    let meta = fs::symlink_metadata(path).ok()?;
+    Some(EntrySnapshot {
+        identity: (meta.dev(), u128::from(meta.ino())),
+        kind: entry_kind(&meta),
+    })
+}
+
+#[cfg(windows)]
+pub fn entry_snapshot(path: &Path) -> Option<EntrySnapshot> {
+    crate::windows::entry_snapshot(path)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub const fn entry_snapshot(_path: &Path) -> Option<EntrySnapshot> {
+    None
+}
+
+pub(crate) fn entry_kind(meta: &fs::Metadata) -> NodeKind {
+    if meta.file_type().is_symlink() {
+        NodeKind::Symlink
+    } else if meta.is_dir() {
+        NodeKind::Directory
+    } else if meta.is_file() {
+        NodeKind::File
+    } else {
+        NodeKind::Other
+    }
+}
 
 /// The directory the user actually scanned, including aliases above it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -240,7 +282,8 @@ fn plan_against(targets: &[Target], root: &Path, mounts: &MountTable) -> Plan {
 
     // A path inside another target is removed with it. Keep the outer one and
     // report the inner one so the review screen can explain the nesting.
-    accepted.sort_by(|left, right| left.path.cmp(&right.path));
+    // Order by the same key as containment, including Windows aliases.
+    accepted.sort_by_cached_key(|target| guard_key(&target.path));
     let mut outer: Vec<Target> = Vec::new();
     for target in accepted {
         if outer
@@ -646,10 +689,15 @@ pub fn addressable(path: &Path) -> bool {
 
 fn changed_entry(target: &Target) -> Option<String> {
     target.identity.and_then(|expected| {
-        (entry_identity(&target.path) != Some(expected)).then(|| {
-            "the marked entry changed or disappeared; rescan and mark again"
-                .into()
-        })
+        entry_snapshot(&target.path)
+            .is_none_or(|actual| {
+                actual.identity != expected
+                    || actual.kind.is_dir() != target.is_dir
+            })
+            .then(|| {
+                "the marked entry changed or disappeared; rescan and mark again"
+                    .into()
+            })
     })
 }
 
@@ -964,7 +1012,7 @@ pub enum TrashBackend {
     Gio,
     /// The XDG trash directory, implemented here.
     XdgHome,
-    /// The Windows Recycle Bin, through the shell's own file operation.
+    /// Windows recycling, disabled until it can preserve marked identities.
     RecycleBin,
     /// No way to move files to a trash on this machine.
     #[default]
@@ -974,12 +1022,8 @@ pub enum TrashBackend {
 impl TrashBackend {
     pub const fn is_available(self) -> bool {
         match self {
-            Self::MacOs
-            | Self::TrashPut
-            | Self::Gio
-            | Self::XdgHome
-            | Self::RecycleBin => true,
-            Self::Unavailable => false,
+            Self::MacOs | Self::TrashPut | Self::Gio | Self::XdgHome => true,
+            Self::RecycleBin | Self::Unavailable => false,
         }
     }
 
@@ -989,7 +1033,7 @@ impl TrashBackend {
             Self::TrashPut => "trash-put",
             Self::Gio => "gio trash",
             Self::XdgHome => "XDG trash",
-            Self::RecycleBin => "the Recycle Bin",
+            Self::RecycleBin => "Recycle Bin (disabled)",
             Self::Unavailable => "no trash tool found",
         }
     }
@@ -1004,7 +1048,9 @@ impl TrashBackend {
             Self::XdgHome => {
                 "moves into ~/.local/share/Trash on the same volume"
             }
-            Self::RecycleBin => "the same Recycle Bin as File Explorer",
+            Self::RecycleBin => {
+                "Recycling is disabled to protect against file replacement."
+            }
             Self::Unavailable => {
                 "install trash-cli or keep deleting permanently"
             }
@@ -1012,8 +1058,8 @@ impl TrashBackend {
     }
 }
 
-/// Detect the best available trash backend for this machine. Windows
-/// always has its Recycle Bin.
+/// Report Windows recycling as disabled instead of selecting a weaker
+/// path-based trash backend.
 #[cfg(windows)]
 pub const fn detect_trash_backend() -> TrashBackend {
     TrashBackend::RecycleBin
@@ -1271,9 +1317,11 @@ fn perform_removal(
         return Err(io::Error::other("the scanned root changed"));
     }
     match mode {
-        RemovalMode::Permanent => {
-            crate::windows::remove_guarded(&guard.path, target.identity)
-        }
+        RemovalMode::Permanent => crate::windows::remove_guarded(
+            &guard.path,
+            target.identity,
+            Some(target.is_dir),
+        ),
         RemovalMode::Trash => {
             if target.identity.is_some()
                 && entry_identity(&guard.path) != target.identity
@@ -1430,7 +1478,7 @@ pub fn remove_permanently(path: &Path, root: &Path) -> io::Result<()> {
     if !saved.matches(root) {
         return Err(io::Error::other("the scanned root changed"));
     }
-    crate::windows::remove_guarded(&guard.path, None)
+    crate::windows::remove_guarded(&guard.path, None, None)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -1569,6 +1617,11 @@ const fn is_dir_link(_meta: &fs::Metadata) -> bool {
 
 /// Move one path to the desktop trash.
 pub fn move_to_trash(path: &Path, backend: TrashBackend) -> io::Result<()> {
+    // Refuse every backend on Windows, including direct callers that choose
+    // a Unix backend. No path-based tool or permanent fallback is safe here.
+    if cfg!(windows) {
+        return recycle(path);
+    }
     match backend {
         TrashBackend::TrashPut => run_tool(Path::new("trash-put"), &[], path),
         TrashBackend::Gio => run_tool(Path::new("gio"), &["trash"], path),
@@ -1614,17 +1667,14 @@ fn trash_via_macos(_path: &Path) -> io::Result<()> {
     Err(io::Error::other("the macOS Trash only exists on macOS"))
 }
 
-/// Hand `path` to the Recycle Bin. `trash` asks the shell to warn before it
-/// destroys anything rather than recycling it (`FOF_WANTNUKEWARNING`), so
-/// the reversible path cannot turn into a permanent one silently.
-#[cfg(windows)]
-fn recycle(path: &Path) -> io::Result<()> {
-    trash::delete(path).map_err(io::Error::other)
-}
-
-#[cfg(not(windows))]
+/// A last identity check cannot bind the shell's later path lookup. Keeping
+/// a no-delete-share handle instead also prevents the shell from recycling.
+/// Refuse the operation until a recoverable identity-bound move is available.
 fn recycle(_path: &Path) -> io::Result<()> {
-    Err(io::Error::other("the Recycle Bin is only on Windows"))
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        TrashBackend::RecycleBin.detail(),
+    ))
 }
 
 /// Run one trash tool on one path.
@@ -1761,10 +1811,49 @@ mod tests {
         Target {
             path: path.to_path_buf(),
             bytes,
-            is_dir: path.is_dir(),
+            is_dir: entry_snapshot(path)
+                .is_some_and(|entry| entry.kind.is_dir()),
             hidden: false,
             identity: entry_identity(path),
         }
+    }
+
+    #[test]
+    fn entry_snapshots_observe_the_kind_and_identity_without_following_links() {
+        let temp = tree();
+        let file = temp.path().join("a/one.bin");
+        let directory = temp.path().join("a/b");
+        let link = temp.path().join("link");
+        link_dir(&directory, &link);
+
+        for (path, kind) in [
+            (&file, NodeKind::File),
+            (&directory, NodeKind::Directory),
+            (&link, NodeKind::Symlink),
+        ] {
+            let snapshot = entry_snapshot(path).expect("snapshot");
+            assert_eq!(snapshot.kind, kind);
+            assert_eq!(Some(snapshot.identity), entry_identity(path));
+        }
+        assert_ne!(entry_identity(&link), entry_identity(&directory));
+    }
+
+    #[test]
+    fn planning_refuses_a_directory_identity_described_as_a_file() {
+        let temp = tree();
+        let directory = temp.path().join("a/b");
+        let sentinel = directory.join("unmarked.txt");
+        fs::write(&sentinel, b"keep directory contents").expect("write");
+        let mut marked = target(&directory, 23);
+        marked.is_dir = false;
+
+        let planned = plan(&[marked], temp.path());
+        assert!(planned.is_empty());
+        assert_eq!(planned.blocked.len(), 1);
+        assert_eq!(
+            fs::read(&sentinel).expect("sentinel"),
+            b"keep directory contents"
+        );
     }
 
     /// [`system_tree`] for plain paths, keyed the way [`refuse`] keys them.
@@ -1927,6 +2016,39 @@ mod tests {
         assert_eq!(plan.covered.len(), 1);
         assert_eq!(plan.covered[0].path, inner.path);
         assert_eq!(plan.bytes(), 30);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_aliases_cover_children_before_counting_bytes() {
+        let temp = TempDir::new().expect("tempdir");
+        // Expand a runner's short TEMP path before varying case or prefix.
+        let root =
+            guard_key(&temp.path().canonicalize().expect("canonical root"));
+        let outer = root.join("CaseFolder");
+        let inner = outer.join("data.bin");
+        fs::create_dir(&outer).expect("mkdir");
+        let sentinel = b"keep sentinel";
+        fs::write(&inner, sentinel).expect("write");
+        let bytes = u64::try_from(sentinel.len()).expect("bytes");
+        let cases = [
+            (root.join("casefolder"), inner.clone()),
+            (outer.clone(), inner.canonicalize().expect("verbatim child")),
+        ];
+        for (outer_alias, inner_alias) in cases {
+            assert_eq!(entry_identity(&outer_alias), entry_identity(&outer));
+            assert_eq!(entry_identity(&inner_alias), entry_identity(&inner));
+            let planned = plan(
+                &[target(&inner_alias, bytes), target(&outer_alias, bytes)],
+                &root,
+            );
+            assert!(planned.blocked.is_empty(), "{:?}", planned.blocked);
+            assert_eq!(planned.targets.len(), 1);
+            assert_eq!(planned.targets[0].path, normalize(&outer_alias));
+            assert_eq!(planned.covered.len(), 1);
+            assert_eq!(planned.bytes(), bytes);
+            assert_eq!(fs::read(&inner).expect("sentinel"), sentinel);
+        }
     }
 
     /// Marks may sit on another volume — `-X` crosses filesystems, and a
@@ -2512,9 +2634,41 @@ mod tests {
         assert!(temp.path().join("a/c.bin").exists());
     }
 
+    /// Control the last-check/shell-handoff schedule without a timing race.
     #[test]
     #[cfg(windows)]
-    fn the_recycle_bin_accepts_a_path_with_pinned_ancestors() {
+    fn recycling_refuses_replacement_after_the_final_identity_check() {
+        let temp = tree();
+        let path = temp.path().join("a/one.bin");
+        let identity = entry_identity(&path).expect("marked identity");
+        let root = RootSnapshot::capture(temp.path()).expect("root identity");
+        let guard =
+            crate::windows::pin_parent(&path, temp.path(), Some(root.identity))
+                .expect("pin ancestors");
+        assert_eq!(entry_identity(&guard.path), Some(identity));
+
+        // Try replacing the final entry while every ancestor stays pinned.
+        // The fixture controls the worker's last-check/handoff boundary.
+        fs::remove_file(&path).expect("remove after check");
+        fs::write(&path, b"unmarked replacement").expect("write replacement");
+        assert_ne!(entry_identity(&guard.path), Some(identity));
+        let result = move_to_trash(&guard.path, TrashBackend::RecycleBin);
+
+        assert!(
+            path.exists(),
+            "the shell removed the unmarked replacement: {result:?}"
+        );
+        assert_eq!(
+            fs::read(&path).expect("read replacement"),
+            b"unmarked replacement"
+        );
+        assert!(temp.path().join("a/c.bin").exists());
+        assert!(result.is_err(), "an unsafe handoff must be refused");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn disabled_recycling_reports_failure_without_permanent_fallback() {
         let temp = tree();
         let path = temp.path().join("a/one.bin");
         let planned = plan(&[target(&path, 10)], temp.path());
@@ -2538,9 +2692,45 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(outcomes, [Ok(())]);
-        assert!(!path.exists());
+        assert_eq!(outcomes.len(), 1);
+        let error = outcomes[0].as_ref().expect_err("recycling disabled");
+        assert!(error.contains("Recycling is disabled"), "{error}");
+        assert_eq!(fs::read(&path).expect("read marked"), vec![b'x'; 10]);
         assert!(temp.path().join("a/c.bin").exists());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_refuses_every_path_based_trash_backend() {
+        let temp = tree();
+        let file = temp.path().join("a/one.bin");
+        let directory = temp.path().join("a/b");
+        let sentinel = directory.join("keep.bin");
+        fs::write(&sentinel, b"keep directory contents").expect("write");
+
+        for backend in [
+            TrashBackend::RecycleBin,
+            TrashBackend::MacOs,
+            TrashBackend::TrashPut,
+            TrashBackend::Gio,
+            TrashBackend::XdgHome,
+            TrashBackend::Unavailable,
+        ] {
+            for path in [&file, &directory] {
+                let error =
+                    move_to_trash(path, backend).expect_err("unsafe backend");
+                assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+                assert_eq!(
+                    fs::read(&file).expect("read marked"),
+                    vec![b'x'; 10]
+                );
+                assert_eq!(
+                    fs::read(&sentinel).expect("read sentinel"),
+                    b"keep directory contents"
+                );
+                assert!(temp.path().join("a/c.bin").exists());
+            }
+        }
     }
 
     #[test]
@@ -2825,10 +3015,10 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_trashes_into_the_recycle_bin() {
+    fn windows_reports_recycling_as_disabled() {
         let backend = detect_trash_backend();
         assert_eq!(backend, TrashBackend::RecycleBin);
-        assert!(backend.is_available());
+        assert!(!backend.is_available());
     }
 
     #[cfg(windows)]

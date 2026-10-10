@@ -265,8 +265,13 @@ fn delete_dialog(
         ),
         targets => format!("Delete {} items permanently?", targets.len()),
     };
+    let advice = if app.trash_backend.is_available() {
+        "Move them to the trash if you might need them again."
+    } else {
+        "Cancel and keep a copy if you might need them again."
+    };
     let body = format!(
-        "This frees {}. Deleted files can\u{2019}t be recovered; move them to the trash if you might need them again.",
+        "This frees {}. Deleted files can\u{2019}t be recovered. {advice}",
         human_bytes(plan.bytes())
     );
     let confirm = cx.entity().downgrade();
@@ -2747,6 +2752,7 @@ fn review_summary(
     );
 
     let explanation = match app.removal_mode {
+        RemovalMode::Trash if !trash => app.trash_backend.detail().to_string(),
         RemovalMode::Trash => format!(
             "Recoverable from the trash until it is emptied. Uses {}.",
             app.trash_backend.label()
