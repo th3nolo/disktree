@@ -3064,6 +3064,62 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn windows_aliases_do_not_bypass_system_tree_protection() {
+        let temp = TempDir::new().expect("tempdir");
+        let system = PathBuf::from(
+            std::env::var_os("SystemRoot").expect("Windows directory"),
+        );
+        let root = temp.path().join("system-alias");
+        link_dir(&system, &root);
+        let path = root.join("Temp");
+        assert!(path.is_dir(), "read-only Windows fixture");
+
+        // Planning only: nothing in the real Windows directory is touched.
+        let planned = plan(&[target(&path, 1)], &root);
+        assert!(
+            planned.is_empty(),
+            "an alias must not authorize system data"
+        );
+        assert_eq!(planned.blocked.len(), 1);
+        assert!(planned.blocked[0].reason.contains("system"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_aliases_do_not_bypass_profile_protection() {
+        let temp = TempDir::new().expect("tempdir");
+        let profiles = crate::windows::user_profiles_dir()
+            .expect("profiles directory");
+        let root = temp.path().join("profiles-alias");
+        link_dir(&profiles, &root);
+        let path = root.join("Public");
+        assert!(path.is_dir(), "read-only public profile fixture");
+
+        // Planning only: no files are created or removed in a user profile.
+        let planned = plan(&[target(&path, 1)], &root);
+        assert!(
+            planned.is_empty(),
+            "an alias must not authorize a profile"
+        );
+        assert_eq!(planned.blocked.len(), 1);
+        assert!(planned.blocked[0].reason.contains("profile"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_aliases_still_allow_ordinary_scanned_directories() {
+        let temp = tree();
+        let root = temp.path().join("ordinary-alias");
+        link_dir(&temp.path().join("a"), &root);
+        let path = root.join("b");
+
+        let planned = plan(&[target(&path, 1)], &root);
+        assert_eq!(planned.targets.len(), 1);
+        assert!(planned.blocked.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn windows_profiles_are_refused() {
         let temp = tempfile::tempdir().expect("tempdir");
         let profiles = temp.path();
