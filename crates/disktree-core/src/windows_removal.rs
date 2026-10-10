@@ -9,10 +9,10 @@ use std::time::SystemTime;
 
 // Each entry needs a handle for preflight. Bound memory and kernel resources;
 // a bigger selection must be split, never silently use weaker recursion.
-pub(crate) const REVIEW_ENTRY_LIMIT: usize = 20_000;
+pub const REVIEW_ENTRY_LIMIT: usize = 20_000;
 
 #[derive(Debug)]
-pub(crate) struct ReviewedTree {
+pub struct ReviewedTree {
     entries: Vec<ReviewedEntry>,
 }
 
@@ -52,13 +52,13 @@ impl Stamp {
 }
 
 impl ReviewedTree {
-    pub(crate) fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.entries.len()
     }
-    pub(crate) fn identity(&self) -> Option<EntryIdentity> {
+    pub fn identity(&self) -> Option<EntryIdentity> {
         self.entries.first().map(|entry| entry.stamp.identity)
     }
-    pub(crate) fn is_directory(&self) -> bool {
+    pub fn is_directory(&self) -> bool {
         self.entries
             .first()
             .is_some_and(|entry| entry.stamp.kind.is_dir())
@@ -104,7 +104,7 @@ fn too_large() -> io::Error {
     )
 }
 
-pub(crate) fn review_tree(
+pub fn review_tree(
     path: &Path,
     cancel: &AtomicBool,
     limit: usize,
@@ -145,7 +145,7 @@ pub(crate) fn review_tree(
     Ok(ReviewedTree { entries })
 }
 
-pub(crate) fn remove_reviewed(
+pub fn remove_reviewed(
     path: &Path,
     review: &ReviewedTree,
     cancel: &AtomicBool,
@@ -185,9 +185,12 @@ pub(crate) fn remove_reviewed(
             ));
         }
     }
-    let mut removed = 0;
-    for (entry, file) in review.entries.iter().zip(&opened).rev() {
-        let result = check_cancel(cancel).and_then(|()| delete_opened(file));
+    for (removed, (entry, file)) in
+        review.entries.iter().zip(&opened).rev().enumerate()
+    {
+        let result = check_cancel(cancel)
+            .and_then(|()| refuse_cloud(&entry.path, file, &roots))
+            .and_then(|()| delete_opened(file));
         if let Err(error) = result {
             return Err(io::Error::new(
                 error.kind(),
@@ -197,7 +200,6 @@ pub(crate) fn remove_reviewed(
                 ),
             ));
         }
-        removed += 1;
         on_removed(&entry.path);
     }
     Ok(())

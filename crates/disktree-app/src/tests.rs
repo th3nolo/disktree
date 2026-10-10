@@ -406,6 +406,7 @@ fn enter_and_its_autorepeat_never_approve_permanent_deletion(
         cx.simulate_event(gpui_kit::KeyDownEvent {
             keystroke: gpui_kit::Keystroke::parse(key).expect("key"),
             is_held: true,
+            prefer_character_input: false,
         });
         draw(cx);
         assert!(read(&view, cx, |app| app.confirm_open));

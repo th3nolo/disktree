@@ -26,7 +26,7 @@ use std::path::{Component, Path, PathBuf, Prefix};
 
 #[path = "windows_removal.rs"]
 mod removal;
-pub(crate) use removal::{
+pub use removal::{
     REVIEW_ENTRY_LIMIT, ReviewedTree, remove_reviewed, review_tree,
 };
 

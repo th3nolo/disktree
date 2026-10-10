@@ -240,21 +240,20 @@ impl Plan {
     }
 
     /// Descendants as well as top-level selections; shown in confirmation.
+    #[cfg(windows)]
     pub fn reviewed_entries(&self) -> Option<usize> {
-        #[cfg(windows)]
-        {
-            self.review.as_ref().map(|review| {
-                review
-                    .trees
-                    .iter()
-                    .map(crate::windows::ReviewedTree::len)
-                    .sum()
-            })
-        }
-        #[cfg(not(windows))]
-        {
-            None
-        }
+        self.review.as_ref().map(|review| {
+            review
+                .trees
+                .iter()
+                .map(crate::windows::ReviewedTree::len)
+                .sum()
+        })
+    }
+
+    #[cfg(not(windows))]
+    pub const fn reviewed_entries(&self) -> Option<usize> {
+        None
     }
 
     pub fn bytes(&self) -> u64 {

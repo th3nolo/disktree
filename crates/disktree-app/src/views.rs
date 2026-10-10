@@ -94,11 +94,15 @@ pub fn root(
                 // Plain Enter and its autorepeat cannot approve deletion.
                 // Confirmation needs a fresh Ctrl+Enter or the Delete button.
                 cx.stop_propagation();
-                cx.prevent_default();
+                window.prevent_default();
                 if !event.is_held && event.keystroke.modifiers.control {
                     this.confirm_delete(cx);
                 }
                 this.apply_focus(window, cx);
+            } else if this.confirm_open && event.is_held
+                && event.keystroke.key == "space" {
+                cx.stop_propagation();
+                window.prevent_default();
             }
         }))
         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
