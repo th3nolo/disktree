@@ -454,3 +454,77 @@ fn an_unprepared_plan_never_starts_permanent_windows_deletion() {
     assert_eq!(fs::read(file).expect("not deleted"), b"unapproved");
     fixture.assert_canaries();
 }
+
+#[test]
+fn shared_lean_cancellation_fixtures_match_native_windows_removal() {
+    // The same vectors run through Lean's frozen-list executor. Here they
+    // drive real Win32 deletion with cancellation at each child boundary.
+    let cases = include_str!("../../../formal/lean/cancellation-cases.txt");
+    for line in cases.lines() {
+        let (cancel_after, expected) = line.split_once(':').expect("fixture");
+        let cancel_after = cancel_after.parse::<usize>().expect("index");
+        let expected = if expected.is_empty() {
+            Vec::new()
+        } else {
+            expected
+                .split(',')
+                .map(|index| index.parse::<usize>().expect("entry"))
+                .collect::<Vec<_>>()
+        };
+        let fixture = Fixture::new();
+        let directory = fixture.root.join("marked");
+        fs::create_dir(&directory).expect("directory");
+        let files = (0..3)
+            .map(|index| directory.join(format!("{index}.bin")))
+            .collect::<Vec<_>>();
+        for file in &files {
+            fs::write(file, b"reviewed").expect("file");
+        }
+        let cancel = AtomicBool::new(false);
+        let review = crate::windows::review_tree(
+            &directory,
+            &cancel,
+            crate::windows::REVIEW_ENTRY_LIMIT,
+        )
+        .expect("review");
+        cancel.store(cancel_after == 0, Ordering::Relaxed);
+        let mut removed = Vec::new();
+        let result = crate::windows::remove_reviewed(
+            &directory,
+            &review,
+            &cancel,
+            |path| {
+                let index = if path == directory {
+                    3
+                } else {
+                    files.iter().position(|file| file == path).expect("child")
+                };
+                removed.push(index);
+                if removed.len() == cancel_after {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            },
+        );
+        assert_eq!(removed, expected, "cancellation fixture {cancel_after}");
+        if cancel_after < 4 {
+            assert_eq!(
+                result.expect_err("cancelled").kind(),
+                io::ErrorKind::Interrupted
+            );
+        } else {
+            result.expect("completed");
+        }
+        for (index, file) in files.iter().enumerate() {
+            if expected.contains(&index) {
+                assert!(!file.exists());
+            } else {
+                assert_eq!(
+                    fs::read(file).expect("unremoved child"),
+                    b"reviewed"
+                );
+            }
+        }
+        assert_eq!(directory.exists(), !expected.contains(&3));
+        fixture.assert_canaries();
+    }
+}

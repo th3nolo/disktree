@@ -1,0 +1,59 @@
+name: Formal removal model
+
+on:
+  pull_request:
+    paths:
+      - 'formal/**'
+      - 'crates/disktree-core/src/removal*.rs'
+      - 'crates/disktree-core/src/windows*.rs'
+      - 'crates/disktree-app/src/state.rs'
+      - '.github/workflows/formal-removal.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'formal/**'
+      - 'crates/disktree-core/src/removal*.rs'
+      - 'crates/disktree-core/src/windows*.rs'
+      - 'crates/disktree-app/src/state.rs'
+      - '.github/workflows/formal-removal.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: formal-removal-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lean:
+    name: Lean kernel and shared fixtures
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      # No third-party proof packages. Verify the official toolchain archive
+      # before extraction; the version must agree with lean-toolchain.
+      - name: Install pinned Lean
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(cat formal/lean/lean-toolchain)" = 'leanprover/lean4:v4.34.1'
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/lean.tar.zst" \
+            https://github.com/leanprover/lean4/releases/download/v4.34.1/lean-4.34.1-linux.tar.zst
+          echo '47bf4bbd78f70c2e9670598ab7124d92b6efb7330ff33e5fbb4030f6fd72e4e4  '"$RUNNER_TEMP/lean.tar.zst" | sha256sum --check --strict
+          mkdir "$RUNNER_TEMP/disktree-lean"
+          tar --zstd --extract --file "$RUNNER_TEMP/lean.tar.zst" \
+            --directory "$RUNNER_TEMP/disktree-lean" --strip-components=1
+          echo "$RUNNER_TEMP/disktree-lean/bin" >> "$GITHUB_PATH"
+
+      - name: Kernel check and audit
+        working-directory: formal/lean
+        shell: bash
+        run: |
+          set -euo pipefail
+          lean --version
+          lake build
+          lake env lean RemovalModel.lean | tee proof-audit.log
+          python3 audit.py proof-audit.log
+          lake exe checkFixtures
