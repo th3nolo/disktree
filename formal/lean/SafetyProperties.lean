@@ -51,11 +51,11 @@ theorem run_complete (plan : Approved root) (p : Preflight) (tail : List Decisio
 
 theorem approved_paths_unique (plan : Approved root) :
     plan.val.Pairwise (fun first later => first.path ≠ later.path) := by
-  exact plan.property.2.2.2.imp (fun _ _ h => h.1)
+  exact plan.property.2.2.2.imp (fun h => h.1)
 
 theorem approved_children_before_parents (plan : Approved root) :
     plan.val.Pairwise (fun first later => ¬ below first.path later.path) := by
-  exact plan.property.2.2.2.imp (fun _ _ h => h.2)
+  exact plan.property.2.2.2.imp (fun h => h.2)
 
 -- Assumption on the review order is explicit. This does not translate Rust's
 -- DFS implementation; native nested fixtures exercise that correspondence.
@@ -95,7 +95,7 @@ theorem observed_removal_has_approved_identity (plan : Approved root) (world : W
     (member : entry ∈ runObserved plan world p ds) :
     world entry.path = some entry.objectId := by
   by_cases h : identitiesAgree world plan.val
-  · simp only [runObserved, if_pos h] at member
+  · simp only [runObserved, ite_eq_left h] at member
     exact h entry (removed_was_approved plan p ds entry member)
   · simp [runObserved, h] at member
 
@@ -140,12 +140,13 @@ theorem apply_removes_matching_selected (world : World) (entries : List Entry) (
   induction entries generalizing world with
   | nil => simp at member
   | cons first rest ih =>
+    change applyRemovals (erase world first) rest entry.path = none
     rcases List.mem_cons.mp member with head | tail
     · subst first
-      apply apply_preserves_absence
+      apply apply_preserves_absence (erase world entry) rest entry.path
       simp [erase, identity]
     · by_cases changed : entry.path = first.path ∧ world entry.path = some first.objectId
-      · apply apply_preserves_absence
+      · apply apply_preserves_absence (erase world first) rest entry.path
         simp [erase, changed]
       · apply ih (erase world first) tail
         simpa [erase, changed] using identity
@@ -153,7 +154,7 @@ theorem apply_removes_matching_selected (world : World) (entries : List Entry) (
 theorem observed_run_complete (plan : Approved root) (world : World) (tail : List Decision)
     (agreement : identitiesAgree world plan.val) :
     runObserved plan world allPass (List.replicate plan.val.length .remove ++ tail) = plan.val := by
-  rw [runObserved, if_pos agreement]
+  rw [runObserved, ite_eq_left agreement]
   exact run_complete plan allPass tail rfl rfl rfl rfl rfl
 
 theorem complete_run_removes_selected (plan : Approved root) (world : World)

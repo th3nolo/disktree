@@ -107,7 +107,10 @@
     "DiskTree.Required.contract_observed_run_complete",
     "DiskTree.Required.contract_complete_run_removes_selected",
     "DiskTree.Required.contract_replaced_object_refused",
-    "DiskTree.Required.contract_replaced_object_survives"
+    "DiskTree.Required.contract_replaced_object_survives",
+    "DiskTree.Required.contract_nested_plan_is_accepted",
+    "DiskTree.Required.contract_nested_complete_trace",
+    "DiskTree.Required.contract_nested_partial_failure"
   ],
   "NestedFixtures.lean": [
     "DiskTree.nested_plan_is_accepted",

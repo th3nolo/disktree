@@ -1,4 +1,5 @@
 import SafetyProperties
+import NestedFixtures
 
 set_option warningAsError true
 
@@ -234,5 +235,14 @@ theorem contract_replaced_object_refused :
 theorem contract_replaced_object_survives :
     applyRemovals replacedWorld replacementPlan.val [1, 2] = some 99 := by
   apply DiskTree.replaced_object_survives <;> assumption
+
+theorem contract_nested_plan_is_accepted : (approve [1] nestedOrder).isSome = true := by
+  apply DiskTree.nested_plan_is_accepted
+
+theorem contract_nested_complete_trace : nestedTrace 10 .cancel = [4, 5, 1, 2, 0, 3, 6] := by
+  apply DiskTree.nested_complete_trace
+
+theorem contract_nested_partial_failure : nestedTrace 3 .failure = [4, 5, 1] := by
+  apply DiskTree.nested_partial_failure
 
 end DiskTree.Required

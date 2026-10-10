@@ -16,7 +16,7 @@ def discover_sources(root: Path) -> list[Path]:
     sources = []
     for path in root.rglob("*.lean"):
         relative = path.relative_to(root)
-        if any(part == ".lake" or part.startswith(".audit-") for part in relative.parts):
+        if ".lake" in relative.parts:
             continue
         if relative.as_posix() in INFRASTRUCTURE:
             continue
