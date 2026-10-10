@@ -17,7 +17,8 @@ elab "#audit_module" : command => do
     let compilerAuxiliary := match Compiler.isUnsafeRecName? name with
       | some parent => match env.checked.get.find? parent with
         | some (.defnInfo value) =>
-          info.isPartial && !ranges.isSome && value.safety == .safe && value.type == info.type
+          info.isPartial && !ranges.isSome &&
+            (value.safety == DefinitionSafety.safe) && (value.type == info.type)
         | _ => false
       | none => false
     let kind := match info with
