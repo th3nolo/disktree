@@ -1,0 +1,13 @@
+cancel:0:
+cancel:1:4
+cancel:2:4,5
+cancel:3:4,5,1
+cancel:4:4,5,1,2
+cancel:5:4,5,1,2,0
+cancel:6:4,5,1,2,0,3
+cancel:7:4,5,1,2,0,3,6
+cancel:10:4,5,1,2,0,3,6
+failure:1:4
+failure:3:4,5,1
+failure:5:4,5,1,2,0
+failure:6:4,5,1,2,0,3

@@ -5,6 +5,11 @@ counts, antivirus scans and successful builds are supporting evidence, not a
 guarantee against data loss. Approval applies to one executable hash and one
 tested environment, not every build or Windows/filesystem combination.
 
+The [Lean model](../formal/lean/README.md) adds kernel-checked abstract safety
+properties and shared native cancellation traces. Its external assumptions
+and the [language/incident review](rust-removal-risk-review.md) are part of the
+evidence; a green proof model is not certification of the compiled candidate.
+
 ## Automated deletion acceptance
 
 `crates/disktree-core/src/removal_acceptance.rs` runs the actual Windows

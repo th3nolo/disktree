@@ -1,0 +1,11 @@
+name = "disktree-removal-model"
+version = "0.1.0"
+defaultTargets = ["RemovalModel", "checkFixtures"]
+
+[[lean_lib]]
+name = "RemovalModel"
+roots = ["RemovalModel", "SafetyProperties", "RequiredProperties", "NestedFixtures", "AuditSupport"]
+
+[[lean_exe]]
+name = "checkFixtures"
+root = "CheckFixtures"
