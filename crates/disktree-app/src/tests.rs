@@ -155,6 +155,7 @@ fn blocked_review_keeps_long_paths_readable_at_desktop_width(
     let plan = read(&view, cx, Disktree::plan);
     assert!(plan.is_empty());
     assert_eq!(plan.blocked.len(), 1);
+    let list = cx.debug_bounds("marked-list").expect("visible review list");
     for selector in ["mark-name-0", "mark-path-0"] {
         let bounds = cx.debug_bounds(selector).expect("identifying text");
         assert!(
@@ -162,8 +163,8 @@ fn blocked_review_keeps_long_paths_readable_at_desktop_width(
             "{selector} needs readable width: {bounds:?}"
         );
         assert!(
-            bounds.size.height <= px(160.),
-            "{selector} must not wrap one character per line: {bounds:?}"
+            bounds.top() >= list.top() && bounds.bottom() <= list.bottom(),
+            "{selector} must fit in the visible list: {bounds:?}, {list:?}"
         );
     }
     assert_eq!(

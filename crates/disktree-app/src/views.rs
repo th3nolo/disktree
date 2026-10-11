@@ -2557,6 +2557,7 @@ fn review(
 
     let mut list = div()
         .id("marked-list")
+        .debug_selector(|| "marked-list".into())
         .flex()
         .flex_col()
         .flex_1()
