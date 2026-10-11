@@ -122,6 +122,56 @@ fn review_stays_bound_to_the_root_that_was_displayed(cx: &mut TestAppContext) {
     assert!(temp.path().join("junk/blob.bin").exists());
 }
 
+/// A refusal must not squeeze the identifying text into a vertical column.
+#[gpui_kit::test]
+fn blocked_review_keeps_long_paths_readable_at_desktop_width(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_omarchy::init);
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let root = temp.path().join("scan");
+    let relative = Path::new("project-with-a-long-descriptive-directory-name")
+        .join("another-long-directory-used-for-review-layout")
+        .join("marked-with-a-long-file-name-for-window-layout.txt");
+    let path = root.join(&relative);
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&path, b"preserve this reviewed file").expect("write");
+    let (view, cx) = view_over(&root, cx);
+    cx.simulate_resize(gpui_kit::size(px(1024.), px(768.)));
+    update(&view, cx, |app, cx| {
+        let crumbs = app.crumbs_for_path(&path).expect("scanned file");
+        app.toggle_mark(&crumbs, cx);
+        app.screen = Screen::Review;
+        cx.notify();
+    });
+    let original = temp.path().join("original");
+    std::fs::rename(&root, &original).expect("move the root");
+    std::fs::create_dir_all(path.parent().expect("parent"))
+        .expect("replacement root");
+    std::fs::hard_link(original.join(&relative), &path)
+        .expect("same file in the replacement root");
+    draw(cx);
+
+    let plan = read(&view, cx, Disktree::plan);
+    assert!(plan.is_empty());
+    assert_eq!(plan.blocked.len(), 1);
+    for selector in ["mark-name-0", "mark-path-0"] {
+        let bounds = cx.debug_bounds(selector).expect("identifying text");
+        assert!(
+            bounds.size.width >= px(180.),
+            "{selector} needs readable width: {bounds:?}"
+        );
+        assert!(
+            bounds.size.height <= px(160.),
+            "{selector} must not wrap one character per line: {bounds:?}"
+        );
+    }
+    assert_eq!(
+        std::fs::read(&path).expect("reviewed file"),
+        b"preserve this reviewed file"
+    );
+}
+
 /// The scan's file description cannot authorize a replacement directory.
 #[gpui_kit::test]
 fn a_file_replaced_by_a_directory_before_marking_is_refused(
