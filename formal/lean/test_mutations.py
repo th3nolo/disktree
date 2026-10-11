@@ -38,7 +38,7 @@ DIAGNOSTIC = re.compile(
 
 
 def theorem_span(source: Path, theorem: str) -> tuple[int, int]:
-    # These fixed test witnesses use a blank-line-delimited source layout.
+    # These fixed test witnesses use indented continuation/proof lines.
     # This is not the proof inventory: audit.py uses Lean's environment for it.
     # Changed/missing anchors stop the driver instead of broadening coverage.
     lines = source.read_text(encoding="utf-8").splitlines()
@@ -49,6 +49,15 @@ def theorem_span(source: Path, theorem: str) -> tuple[int, int]:
     start = anchors[0]
     end = start
     while end + 1 < len(lines) and lines[end + 1].strip():
+        following = lines[end + 1]
+        # A missing blank line must not extend a witness into another command,
+        # including an indented declaration inside the surrounding namespace.
+        if re.match(r"^\s*(?:@\[|(?:private |protected )?(?:theorem|lemma|def|abbrev|"
+                    r"instance|structure|inductive|opaque|axiom|namespace|section|end|"
+                    r"import|open|attribute|set_option)\b)", following):
+            break
+        if following == following.lstrip():
+            raise RuntimeError(f"expected theorem continuation layout changed: {source.name}: {theorem}")
         end += 1
     return start + 1, end + 1
 

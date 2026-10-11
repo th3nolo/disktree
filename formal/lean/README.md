@@ -204,8 +204,9 @@ identifiers, parse/setup/resource errors invalidate classification, except
 for the deliberately deleted exact named requirement. Warnings remain errors
 for ordinary builds; a warning accompanying a real proof failure is not itself
 the semantic evidence. The driver records the theorem, span, category, matched
-diagnostic and full build log. Its fixed witnesses currently use the simple
-blank-line-delimited source layout; changed/missing anchors stop the driver.
+diagnostic and full build log. Its fixed witnesses currently use indented
+continuation/proof lines; a new declaration ends the span even without a blank
+separator. Changed/missing anchors or unsupported layouts stop the driver.
 This classifier is part of the reviewed test infrastructure, not a proof of
 arbitrary compiler diagnostics or a substitute for review of the specification.
 CI retains the version, checked merge commit, full JSON declaration/dependency

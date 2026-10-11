@@ -65,6 +65,13 @@ class MutationClassifierTests(unittest.TestCase):
                          "NotSafetyProperties.lean:3:2", "Other/SafetyProperties.lean:3:2"):
             with self.subTest(location=location), self.assertRaises(RuntimeError):
                 self.classify(f"error: {location}: unsolved goals\n⊢ True\n")
+        for indentation in ("", "  "):
+            (self.root / "SafetyProperties.lean").write_text(
+                "import Std\n\ntheorem intended : True := by trivial\n"
+                f"{indentation}theorem other : False := by skip\n", encoding="utf-8",
+            )
+            with self.subTest(indentation=indentation), self.assertRaises(RuntimeError):
+                self.classify("error: SafetyProperties.lean:4:29: unsolved goals\n⊢ False\n")
 
     def test_parse_setup_and_unknown_error_categories_are_rejected(self):
         for output in ("error: SafetyProperties.lean:3:2: unexpected token 'bad'\n",
@@ -122,6 +129,9 @@ class CompilerClassifierTests(unittest.TestCase):
 
     def test_actual_unsolved_named_property_is_a_killed_mutation(self):
         self.check("theorem intended : False := by skip\n")
+        with self.assertRaisesRegex(RuntimeError, "no intended property failure"):
+            self.check("theorem intended : True := by trivial\n"
+                       "theorem other : False := by skip\n")
 
 
 if __name__ == "__main__":
