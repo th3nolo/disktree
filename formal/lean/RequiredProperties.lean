@@ -15,6 +15,11 @@ theorem contract_approve_accepts_iff_valid (root : Path) (entries : List Entry) 
     (approve root entries).isSome = true ↔ valid root entries := by
   exact DiskTree.approve_accepts_iff_valid root entries
 
+theorem contract_approve_exact_result (root : Path) (entries : List Entry) :
+    (approve root entries).map (fun plan => plan.val) =
+      (if valid root entries then some entries else none) := by
+  exact DiskTree.approve_exact_result root entries
+
 theorem contract_empty_root_rejected (entries : List Entry) : approve [] entries = none := by
   apply DiskTree.empty_root_rejected <;> assumption
 

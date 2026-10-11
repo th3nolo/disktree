@@ -51,6 +51,12 @@ theorem approve_accepts_iff_valid (root : Path) (entries : List Entry) :
     (approve root entries).isSome = true ↔ valid root entries := by
   by_cases h : valid root entries <;> simp [approve, h]
 
+-- The returned certificate must describe the caller's exact frozen list.
+theorem approve_exact_result (root : Path) (entries : List Entry) :
+    (approve root entries).map (fun plan => plan.val) =
+      (if valid root entries then some entries else none) := by
+  by_cases h : valid root entries <;> simp [approve, h]
+
 theorem empty_root_rejected (entries : List Entry) : approve [] entries = none := by
   apply approve_rejects_invalid
   simp [valid]

@@ -7,8 +7,9 @@ import tempfile
 import unittest
 
 from test_mutations import (
-    APPROVAL_BODY, ROOT, SELECTIVE_APPROVAL_BODY, classify_failure,
-    selective_approval_probe, theorem_span,
+    APPROVAL_BODY, EMPTY_APPROVAL_BODY, ROOT, SELECTIVE_APPROVAL_BODY,
+    classify_failure, selective_approval_probe, substitution_approval_probe,
+    theorem_span,
 )
 
 
@@ -151,6 +152,24 @@ class CompilerClassifierTests(unittest.TestCase):
             result = selective_approval_probe(directory, directory)
             self.assertEqual(result["accepted_baseline_examples"], 3)
             self.assertEqual(result["independently_valid_refused_root"], [42])
+
+    def test_substitution_probe_preserves_acceptance_but_changes_returned_entries(self):
+        source = (ROOT / "RemovalModel.lean").read_text(encoding="utf-8")
+        self.assertEqual(source.count(APPROVAL_BODY), 1)
+        with tempfile.TemporaryDirectory(prefix=".audit-test-", dir=ROOT) as raw:
+            directory = Path(raw).resolve()
+            self.assertEqual(directory.parent, ROOT)
+            model = directory / "RemovalModel.lean"
+            model.write_text(source, encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "substitution approval setup probe failed"):
+                substitution_approval_probe(directory, directory)
+            model.write_text(source.replace(APPROVAL_BODY, EMPTY_APPROVAL_BODY),
+                             encoding="utf-8")
+            result = substitution_approval_probe(directory, directory)
+            self.assertTrue(result["acceptance_iff_valid_checked"])
+            self.assertEqual(result["preserved_baseline_examples"], 3)
+            self.assertEqual(result["substituted_entries"], [])
+            self.assertEqual(result["substituted_root"], [42])
 
 
 if __name__ == "__main__":

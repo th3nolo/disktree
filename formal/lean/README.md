@@ -26,6 +26,11 @@ only valid plans, for arbitrary roots and lists. Its fixed statement contract
 and mandatory inventory entry protect acceptance beyond the positive fixtures;
 `run_complete`, which starts with an already certified `Approved`, does not
 establish this obligation by itself.
+`approve_exact_result` also fixes the returned contents: valid input yields
+exactly the submitted entries, and invalid input yields no plan. Equality of
+the lists includes every modeled path, object ID, protection flag and position.
+Its independent statement contract and inventory entry prevent approval from
+substituting another valid list while preserving the success flag.
 The executor records an entry only when its deletion succeeds and stops that
 target on cancellation, failure, cloud refusal, or an exhausted schedule.
 
@@ -189,12 +194,12 @@ approval policy, the five-control run rule, empty/successful execution steps,
 identity-checked erasure and the exact `u64` maximum/saturating sum. They prevent
 the dependent theorem statements from silently following weakened meanings.
 
-Twenty-six auditor tests and sixteen mutation-classifier tests cover report
-validation and failure classification. Fifteen of these tests exercise the
+Twenty-six auditor tests and seventeen mutation-classifier tests cover report
+validation and failure classification. Sixteen of these tests exercise the
 real pinned compiler and are enabled in CI, including logically valid external
 definitions, separately applied attributes, programmatic environment attributes,
 and actual unrelated-typo/warning-only failures.
-Seventeen mutation checks first require a green baseline, then require the
+Eighteen mutation checks first require a green baseline, then require the
 expected proof failure within a named theorem's declaration span when removing
 each preflight control, returning an empty run, bypassing identity checks, allowing
 duplicate/parent-first paths, deleting a required proof or weakening its type.
@@ -207,6 +212,12 @@ unchanged baseline policy/data definitions before the full mutated project
 must fail `approve_accepts_iff_valid`. Both the probe source/result and the
 named theorem failure are retained. This is a test of specification coverage;
 the production approval definition is unchanged.
+The plan-substitution mutation returns an empty valid plan outside root `[1]`.
+Its compiler probe proves that universal acceptance still holds and checks
+that all three old positive examples keep their exact contents. It then checks
+that a valid nonempty input under `[42]` produces `Some([])`. The complete
+mutated project must fail specifically in `approve_exact_result`. A setup or
+source-anchor failure cannot count as that semantic rejection.
 Each case fixes the expected theorem and diagnostic category independently
 of the changed definition. Unsolved proof obligations, a concrete proposition
 proved false, an arithmetic obligation, a fixed-definition mismatch, or the

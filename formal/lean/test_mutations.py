@@ -11,6 +11,14 @@ ROOT = Path(__file__).parent.resolve()
 
 APPROVAL_BODY = "if h : valid root entries then some ⟨entries, h⟩ else none"
 SELECTIVE_APPROVAL_BODY = "if root = [1] then\n    " + APPROVAL_BODY + "\n  else none"
+EMPTY_APPROVAL_BODY = (
+    "if h : valid root entries then\n"
+    "    some ⟨if root = [1] then entries else [], by\n"
+    "      by_cases hr : root = [1]\n"
+    "      · simpa [hr] using h\n"
+    "      · simpa [hr, valid, orderedDistinct] using h.1⟩\n"
+    "  else none"
+)
 
 # Fixed witnesses for each controlled source mutation. These are independent
 # of the changed definition; a file-level error is not a property failure.
@@ -32,6 +40,7 @@ EXPECTED_FAILURES = {
     "delete_required_theorem": ("contract_replaced_object_survives", "missing_requirement"),
     "weaken_required_statement": ("contract_replaced_object_survives", "statement"),
     "approve_only_fixture_root": ("approve_accepts_iff_valid", "unsolved"),
+    "approve_substitutes_empty_plan": ("approve_exact_result", "unsolved"),
 }
 
 DIAGNOSTIC = re.compile(
@@ -146,7 +155,7 @@ def mutate(root, file, old, new):
     path.write_text(text.replace(old, new), encoding="utf-8")
 
 
-def selective_approval_probe(root: Path, temporary: Path) -> dict:
+def approval_setup_probe(root: Path, temporary: Path, checks: str, label: str) -> dict:
     # Compile the actual mutated approval body against the unchanged baseline
     # policy/data definitions. This setup witness cannot count as the mutation
     # rejection: the complete mutated project must still fail its named proof.
@@ -161,12 +170,7 @@ def selective_approval_probe(root: Path, temporary: Path) -> dict:
         "set_option warningAsError true\nopen DiskTree\n"
         "namespace ApprovalMutationProbe\n"
         + definition.replace("def approve ", "def candidate ", 1) + "\n"
-        "#guard (candidate [1] [fixtureEntry 0]).isSome = true\n"
-        "#guard (candidate [1] fixtureOrder).isSome = true\n"
-        "#guard (candidate [1] nestedOrder).isSome = true\n"
-        "#guard valid [42] [⟨[42, 1], 314, false⟩]\n"
-        "#guard (candidate [42] [⟨[42, 1], 314, false⟩]).isSome = false\n"
-        "end ApprovalMutationProbe\n"
+        + checks + "end ApprovalMutationProbe\n"
     )
     temporary = temporary.resolve()
     if temporary.parent != ROOT or not root.resolve().is_relative_to(ROOT):
@@ -178,9 +182,41 @@ def selective_approval_probe(root: Path, temporary: Path) -> dict:
         cwd=ROOT, text=True, encoding="utf-8", capture_output=True, timeout=120,
     )
     if result.returncode:
-        raise RuntimeError(f"selective approval setup probe failed:\n{result.stdout}{result.stderr}")
-    return dict(exit_code=result.returncode, source=probe, log=result.stdout + result.stderr,
+        raise RuntimeError(f"{label} setup probe failed:\n{result.stdout}{result.stderr}")
+    return dict(exit_code=result.returncode, source=probe,
+                log=result.stdout + result.stderr)
+
+
+def selective_approval_probe(root: Path, temporary: Path) -> dict:
+    checks = (
+        "#guard (candidate [1] [fixtureEntry 0]).isSome = true\n"
+        "#guard (candidate [1] fixtureOrder).isSome = true\n"
+        "#guard (candidate [1] nestedOrder).isSome = true\n"
+        "#guard valid [42] [⟨[42, 1], 314, false⟩]\n"
+        "#guard (candidate [42] [⟨[42, 1], 314, false⟩]).isSome = false\n"
+    )
+    return dict(approval_setup_probe(root, temporary, checks, "selective approval"),
                 accepted_baseline_examples=3, independently_valid_refused_root=[42])
+
+
+def substitution_approval_probe(root: Path, temporary: Path) -> dict:
+    # Acceptance can remain universally correct while the returned data changes.
+    # The three old positive examples must also retain their exact contents.
+    checks = (
+        "example (root : Path) (entries : List Entry) :\n"
+        "    (candidate root entries).isSome = true ↔ valid root entries := by\n"
+        "  by_cases h : valid root entries <;> simp [candidate, h]\n"
+        "#guard (candidate [1] [fixtureEntry 0]).map (fun p => p.val) = some [fixtureEntry 0]\n"
+        "#guard (candidate [1] fixtureOrder).map (fun p => p.val) = some fixtureOrder\n"
+        "#guard (candidate [1] nestedOrder).map (fun p => p.val) = some nestedOrder\n"
+        "#guard valid [42] [⟨[42, 1], 314, false⟩]\n"
+        "#guard (candidate [42] [⟨[42, 1], 314, false⟩]).isSome = true\n"
+        "#guard (candidate [42] [⟨[42, 1], 314, false⟩]).map (fun p => p.val) = some []\n"
+    )
+    return dict(approval_setup_probe(root, temporary, checks, "substitution approval"),
+                preserved_baseline_examples=3, acceptance_iff_valid_checked=True,
+                submitted_entries=[dict(path=[42, 1], objectId=314, guardedOut=False)],
+                substituted_entries=[], substituted_root=[42])
 
 
 def main():
@@ -220,6 +256,8 @@ def main():
          "theorem replaced_object_survives : True := by trivial", "RequiredProperties.lean"),
         ("approve_only_fixture_root", model,
          APPROVAL_BODY, SELECTIVE_APPROVAL_BODY, model),
+        ("approve_substitutes_empty_plan", model,
+         APPROVAL_BODY, EMPTY_APPROVAL_BODY, model),
     ]
     if {case[0] for case in cases} != set(EXPECTED_FAILURES):
         raise RuntimeError("mutation witnesses do not match controlled cases")
@@ -235,8 +273,11 @@ def main():
                 "proof-audit.json", "mutation-results.json",
             ))
             mutate(copy, file, old, new)
-            setup_probe = (selective_approval_probe(copy, temporary)
-                           if name == "approve_only_fixture_root" else None)
+            setup_probe = None
+            if name == "approve_only_fixture_root":
+                setup_probe = selective_approval_probe(copy, temporary)
+            elif name == "approve_substitutes_empty_plan":
+                setup_probe = substitution_approval_probe(copy, temporary)
             result = checked_build(copy)
             output = result.stdout + result.stderr
             theorem, category = EXPECTED_FAILURES[name]
