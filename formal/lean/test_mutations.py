@@ -9,6 +9,116 @@ import tempfile
 
 ROOT = Path(__file__).parent.resolve()
 
+# Fixed witnesses for each controlled source mutation. These are independent
+# of the changed definition; a file-level error is not a property failure.
+EXPECTED_FAILURES = {
+    "drop_rootMatches": ("root_mismatch_removes_nothing", "unsolved"),
+    "drop_identitiesMatch": ("identity_mismatch_removes_nothing", "unsolved"),
+    "drop_membershipMatches": ("membership_mismatch_removes_nothing", "unsolved"),
+    "drop_guardsPass": ("guard_refusal_removes_nothing", "unsolved"),
+    "drop_handlesPinned": ("unpinned_handles_remove_nothing", "unsolved"),
+    "broaden_path_scope": ("sibling_component_rejected", "false_proposition"),
+    "ignore_protected_flag": ("protected_entry_rejected", "false_proposition"),
+    "increase_entry_limit": ("removed_count_bounded", "arithmetic"),
+    "change_byte_ceiling": ("contract_u64_maximum", "definition"),
+    "empty_run": ("complete_trace_has_no_extra_entries", "false_proposition"),
+    "ignore_current_identity": ("replaced_object_survives", "false_proposition"),
+    "ignore_observed_identity": ("replaced_object_refused", "false_proposition"),
+    "allow_duplicate_paths": ("duplicate_path_rejected", "false_proposition"),
+    "allow_parent_first": ("parent_before_child_rejected", "false_proposition"),
+    "delete_required_theorem": ("contract_replaced_object_survives", "missing_requirement"),
+    "weaken_required_statement": ("contract_replaced_object_survives", "statement"),
+}
+
+DIAGNOSTIC = re.compile(
+    r"^(?P<lake>error: )?(?P<file>.+?\.lean):(?P<line>\d+):(?P<column>\d+): "
+    r"(?:(?P<severity>error|warning|info)(?:\((?P<code>[^)\n]*)\))?: )?"
+    r"(?P<message>[^\n]*)", re.MULTILINE,
+)
+
+
+def theorem_span(source: Path, theorem: str) -> tuple[int, int]:
+    # These fixed test witnesses use a blank-line-delimited source layout.
+    # This is not the proof inventory: audit.py uses Lean's environment for it.
+    # Changed/missing anchors stop the driver instead of broadening coverage.
+    lines = source.read_text(encoding="utf-8").splitlines()
+    anchors = [index for index, line in enumerate(lines)
+               if re.match(r"^theorem " + re.escape(theorem) + r"(?:\s|:)", line)]
+    if len(anchors) != 1:
+        raise RuntimeError(f"expected theorem anchor changed: {source.name}: {theorem}")
+    start = anchors[0]
+    end = start
+    while end + 1 < len(lines) and lines[end + 1].strip():
+        end += 1
+    return start + 1, end + 1
+
+
+def error_diagnostics(output: str) -> list[dict]:
+    matches = list(DIAGNOSTIC.finditer(output))
+    diagnostics = []
+    for index, match in enumerate(matches):
+        severity = match["severity"] or ("error" if match["lake"] else None)
+        if severity != "error":
+            continue
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(output)
+        message = output[match.start("message"):end].strip()
+        diagnostics.append(dict(file=match["file"], line=int(match["line"]),
+                                column=int(match["column"]), code=match["code"], message=message))
+    return diagnostics
+
+
+def property_failure(message: str, category: str) -> bool:
+    if category == "unsolved":
+        return message.startswith("unsolved goals\n")
+    if category == "false_proposition":
+        return (message.startswith("Tactic `decide` proved that the proposition\n")
+                and re.search(r"^is false$", message, re.MULTILINE) is not None)
+    if category == "arithmetic":
+        return message.startswith("omega could not prove the goal:")
+    if category == "definition":
+        return message.startswith("Not a definitional equality:")
+    if category == "missing_requirement":
+        return message.splitlines()[0] == "Unknown identifier `DiskTree.replaced_object_survives`"
+    if category == "statement":
+        return message.startswith(
+            "Tactic `apply` failed: could not unify the type of `replaced_object_survives`")
+    raise RuntimeError(f"unknown expected failure category: {category}")
+
+
+def classify_failure(result, root: Path, expected: str, theorem: str, category: str) -> dict:
+    output = result.stdout + result.stderr
+    if result.returncode == 0:
+        raise RuntimeError("mutated build succeeded")
+    span = theorem_span(root / expected, theorem)
+    diagnostics = error_diagnostics(output)
+
+    def within_witness(diagnostic):
+        reported = Path(diagnostic["file"])
+        same_file = (diagnostic["file"] == expected or
+                     (reported.is_absolute() and reported.resolve() == (root / expected).resolve()))
+        return same_file and span[0] <= diagnostic["line"] <= span[1]
+
+    for diagnostic in diagnostics:
+        # A typo/parse/setup/resource failure must not accidentally accompany
+        # and validate a semantic failure. Only the deliberate missing named
+        # requirement may use an unknown-identifier diagnostic.
+        if re.match(r"Unknown (?:identifier|constant|module)|unexpected token|"
+                    r"unterminated|invalid field|failed to synthesize|"
+                    r"maximum (?:recursion|heartbeat)|object file|cannot find",
+                    diagnostic["message"], re.IGNORECASE):
+            deliberate = (
+                category == "missing_requirement"
+                and within_witness(diagnostic)
+                and property_failure(diagnostic["message"], category)
+            )
+            if not deliberate:
+                raise RuntimeError(f"unrelated elaboration/setup failure: {diagnostic}")
+    for diagnostic in diagnostics:
+        if within_witness(diagnostic) and property_failure(diagnostic["message"], category):
+            return dict(expected_theorem=theorem, source_span=list(span),
+                        failure_category=category, diagnostic=diagnostic)
+    raise RuntimeError(f"no intended property failure in {expected}:{span} ({theorem}, {category}):\n{output}")
+
 
 def checked_build(root):
     return subprocess.run(["lake", "build"], cwd=root, text=True, encoding="utf-8",
@@ -59,6 +169,8 @@ def main():
          "    applyRemovals replacedWorld replacementPlan.val [1, 2] = some 99 := by decide",
          "theorem replaced_object_survives : True := by trivial", "RequiredProperties.lean"),
     ]
+    if {case[0] for case in cases} != set(EXPECTED_FAILURES):
+        raise RuntimeError("mutation witnesses do not match controlled cases")
     evidence = []
     for name, file, old, new, expected in cases:
         with tempfile.TemporaryDirectory(prefix=".audit-mutation-", dir=ROOT) as raw:
@@ -66,16 +178,18 @@ def main():
             if temporary.parent != ROOT:
                 raise RuntimeError("mutation directory escaped project")
             copy = temporary / "project"
-            shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".lake", ".audit-*", "__pycache__", "*.log", "*.json"))
+            shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(
+                ".lake", ".audit-*", "__pycache__", "*.log",
+                "proof-audit.json", "mutation-results.json",
+            ))
             mutate(copy, file, old, new)
             result = checked_build(copy)
             output = result.stdout + result.stderr
-            if result.returncode == 0 or not re.search(re.escape(expected) + r":\d+:\d+: error:", output):
-                # Lake currently prefixes these diagnostics with "error:".
-                if result.returncode == 0 or not re.search(r"error: .*" + re.escape(expected) + r":\d+:\d+:", output):
-                    raise RuntimeError(f"mutation {name} failed for an unexpected reason:\n{output}")
-            evidence.append(dict(mutation=name, exit_code=result.returncode, failed_module=expected, log=output))
-            print(f"{name}: rejected in {expected}", flush=True)
+            theorem, category = EXPECTED_FAILURES[name]
+            witness = classify_failure(result, copy, expected, theorem, category)
+            evidence.append(dict(mutation=name, exit_code=result.returncode,
+                                 failed_module=expected, **witness, log=output))
+            print(f"{name}: rejected by {expected}:{theorem} ({category})", flush=True)
     (ROOT / "mutation-results.json").write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
     print(f"{len(evidence)} weakened models rejected; baseline kernel build passed")
 

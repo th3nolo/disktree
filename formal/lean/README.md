@@ -76,7 +76,12 @@ not a prediction of operating-system behavior.
 
 The six lines in `cancellation-cases.txt` specify cancellation after 0, 1, 2,
 3, 4, or 10 successful entries for three sorted children and their parent.
-`lake exe checkFixtures` executes approval, preflight and `run` on these lines.
+`fixtureTrace` and `nestedTrace` use `Approved` plans constructed with
+kernel-checked validity proofs, then execute preflight and `run` on these lines.
+The executable also calls `approve` at runtime for both fixture lists and
+executes every shared schedule through `runObserved` with a matching `World`.
+Both paths must produce the independently recorded expected IDs; a runtime
+approval refusal fails the fixture check.
 `shared_lean_cancellation_fixtures_match_native_windows_removal` reads the same
 file and calls actual Win32 review/removal on owned temporary directories,
 checking the exact order, remaining bytes, parent existence, and outside
@@ -129,7 +134,7 @@ With the pinned toolchain installed, from `formal/lean`:
 
 ```sh
 lake build
-LEAN_AUDIT_INTEGRATION=1 python3 -m unittest -v test_audit.py
+LEAN_AUDIT_INTEGRATION=1 python3 -m unittest -v test_audit.py test_mutation_classifier.py
 python3 audit.py proof-audit.json
 lake exe checkFixtures
 python3 test_mutations.py
@@ -147,8 +152,11 @@ block comments and nested files do not determine coverage. It collects
 transitive axioms with Lean's own `collectAxioms`, and records declaration
 kinds, types, values, safety and implementation-replacement attributes.
 Project axioms (even unused), source-declared unsafe/partial definitions and
-`implemented_by` are refused. Dependencies beyond `propext`, `Quot.sound`
-and `Classical.choice`, including `sorryAx` and native proof shortcuts, fail
+`implemented_by` and `extern` are refused. The report includes an explicit
+Boolean `extern` field obtained from Lean's checked environment, even when
+the attribute is applied separately or through Lean's attribute API. Missing
+or malformed fields fail report validation. Dependencies beyond `propext`,
+`Quot.sound` and `Classical.choice`, including `sorryAx` and native proof shortcuts, fail
 the audit. Lean warnings remain errors.
 
 Lean generates partial `_unsafe_rec` runtime helpers for ordinary safe recursive
@@ -176,15 +184,30 @@ approval policy, the five-control run rule, empty/successful execution steps,
 identity-checked erasure and the exact `u64` maximum/saturating sum. They prevent
 the dependent theorem statements from silently following weakened meanings.
 
-Twenty-two audit tests cover report validation and real compiler/environment
-behavior. The eight integration tests require the pinned compiler and are
-enabled in CI. Sixteen mutation checks first require a green baseline, then
-require a Lean error in the relevant specification module when removing each
-preflight control, returning an empty run, bypassing identity checks, allowing
+Twenty-six auditor tests and fifteen mutation-classifier tests cover report
+validation and failure classification. Fourteen of these tests exercise the
+real pinned compiler and are enabled in CI, including logically valid external
+definitions, separately applied attributes, programmatic environment attributes,
+and actual unrelated-typo/warning-only failures.
+Sixteen mutation checks first require a green baseline, then require the
+expected proof failure within a named theorem's declaration span when removing
+each preflight control, returning an empty run, bypassing identity checks, allowing
 duplicate/parent-first paths, deleting a required proof or weakening its type.
 They also weaken containment/protection, raise the entry limit, and change
 the byte ceiling without changing the arithmetic theorem statements.
-An unrelated build/setup failure is not counted as a rejected mutation.
+Each case fixes the expected theorem and diagnostic category independently
+of the changed definition. Unsolved proof obligations, a concrete proposition
+proved false, an arithmetic obligation, a fixed-definition mismatch, or the
+exact missing/weakened required theorem provide the retained witness. Errors
+in another declaration/module and warning-only failures do not count. Unknown
+identifiers, parse/setup/resource errors invalidate classification, except
+for the deliberately deleted exact named requirement. Warnings remain errors
+for ordinary builds; a warning accompanying a real proof failure is not itself
+the semantic evidence. The driver records the theorem, span, category, matched
+diagnostic and full build log. Its fixed witnesses currently use the simple
+blank-line-delimited source layout; changed/missing anchors stop the driver.
+This classifier is part of the reviewed test infrastructure, not a proof of
+arbitrary compiler diagnostics or a substitute for review of the specification.
 CI retains the version, checked merge commit, full JSON declaration/dependency
 audit, audit test logs, model fixtures and mutation diagnostics for 14 days.
 

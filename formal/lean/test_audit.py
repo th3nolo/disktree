@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 
@@ -14,7 +15,7 @@ ROOT = Path(__file__).parent.resolve()
 def row(name="DiskTree.first", axioms=(), **changes):
     result = dict(name=name, user_name=name, kind="theorem", type="True", value="proof",
                   unsafe=False, partial=False, compiler_auxiliary=False,
-                  implemented_by=None, axioms=list(axioms))
+                  implemented_by=None, extern=False, axioms=list(axioms))
     result.update(changes)
     return result
 
@@ -56,15 +57,21 @@ class ReportAuditTests(unittest.TestCase):
 
     def test_axiom_unsafe_partial_and_replacement_implementation_are_rejected(self):
         for change in (dict(kind="axiom"), dict(unsafe=True), dict(partial=True),
-                       dict(implemented_by="replacement")):
+                       dict(implemented_by="replacement"), dict(extern=True)):
             with self.subTest(change=change), self.assertRaises(RuntimeError):
                 self.check([row(**change)])
 
     def test_report_schema_is_required(self):
-        record = row()
-        del record["type"]
-        with self.assertRaises(RuntimeError):
-            self.check([record])
+        for field in ("type", "extern"):
+            record = row()
+            del record[field]
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                self.check([record])
+
+    def test_extern_attribute_must_be_an_explicit_boolean(self):
+        for value in (None, 0, "", []):
+            with self.subTest(value=value), self.assertRaises(RuntimeError):
+                self.check([row(extern=value)])
 
     def test_environment_marker_missing_or_duplicated_is_rejected(self):
         for text in ("", "DISKTREE_AUDIT []\nDISKTREE_AUDIT []\n"):
@@ -111,6 +118,19 @@ class ReportAuditTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("LEAN_AUDIT_INTEGRATION") == "1", "requires pinned Lean")
 class LeanEnvironmentTests(unittest.TestCase):
+    def check_logical_source(self, code):
+        # Establish that refusal comes from the audit, not a malformed fixture.
+        with tempfile.TemporaryDirectory(prefix=".audit-test-", dir=ROOT) as raw:
+            directory = Path(raw).resolve()
+            self.assertEqual(directory.parent, ROOT)
+            source = directory / "Logical.lean"
+            source.write_text("import Lean\n" + code, encoding="utf-8")
+            result = subprocess.run(
+                ["lake", "env", "lean", "-DwarningAsError=true", str(source)],
+                cwd=ROOT, text=True, encoding="utf-8", capture_output=True, timeout=120,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def inspect(self, code, nested=False):
         with tempfile.TemporaryDirectory(prefix=".audit-test-", dir=ROOT) as raw:
             directory = Path(raw).resolve()
@@ -162,6 +182,46 @@ class LeanEnvironmentTests(unittest.TestCase):
                 "@[implemented_by implementation] def claimed : Bool := true\n"
                 "theorem normal : True := by trivial\n"
             )
+            validate_report({"Extra.lean": records}, {"Extra.lean"}, {})
+
+    def test_extern_definition_with_valid_logical_proof_is_rejected(self):
+        code = (
+            '@[extern "disktree_untrusted_runtime"] def claimed : Bool := true\n'
+            "theorem logical : claimed = true := rfl\n"
+        )
+        self.check_logical_source(code)
+        with self.assertRaisesRegex(RuntimeError, "prohibited source syntax"):
+            self.inspect(code)
+
+    def test_separately_applied_extern_attribute_is_rejected(self):
+        code = (
+            "def claimed : Bool := true\n"
+            'attribute [extern "disktree_untrusted_runtime"] claimed\n'
+            "theorem logical : claimed = true := rfl\n"
+        )
+        self.check_logical_source(code)
+        with self.assertRaisesRegex(RuntimeError, "prohibited source syntax"):
+            self.inspect(code)
+
+    def test_extern_environment_attribute_is_reported_without_source_keyword(self):
+        # Exercise the independent environment check through Lean's attribute
+        # API. A source-word check cannot detect this programmatic attachment.
+        code = (
+            "def claimed : Bool := true\n"
+            "run_cmd do\n"
+            "  let env ← Lean.getEnv\n"
+            "  match Lean.externAttr.setParam env `claimed\n"
+            '      { entries := [.standard `all "disktree_untrusted_runtime"] } with\n'
+            "  | .ok updated => Lean.setEnv updated\n"
+            "  | .error message => throwError message\n"
+            "theorem logical : claimed = true := rfl\n"
+        )
+        self.check_logical_source(code)
+        records = self.inspect(code)
+        claimed = next(record for record in records if record["user_name"] == "claimed")
+        self.assertIs(claimed["extern"], True)
+        self.assertEqual(claimed["axioms"], [])
+        with self.assertRaisesRegex(RuntimeError, "prohibited declaration.*claimed"):
             validate_report({"Extra.lean": records}, {"Extra.lean"}, {})
 
     def test_safe_recursion_keeps_compiler_helpers_without_trusting_extra_axioms(self):

@@ -1,5 +1,6 @@
 import Lean
 import Lean.Compiler.Old
+import Lean.Compiler.ExternAttr
 
 -- Trusted audit infrastructure, not part of the removal specification. Inspect
 -- the checked current-module environment, including private/generated proofs.
@@ -10,9 +11,9 @@ open Lean Elab Command
 -- The environment remains the authority for the declaration inventory.
 private partial def prohibitedSyntax : Syntax → Bool
   | .atom _ value =>
-    ["sorry", "admit", "axiom", "native_decide", "unsafe", "partial", "implemented_by"].contains value
+    ["sorry", "admit", "axiom", "native_decide", "unsafe", "partial", "implemented_by", "extern"].contains value
   | .ident _ _ name _ =>
-    ["sorry", "admit", "axiom", "native_decide", "unsafe", "partial", "implemented_by"].contains name.toString
+    ["sorry", "admit", "axiom", "native_decide", "unsafe", "partial", "implemented_by", "extern"].contains name.toString
   | .node _ _ args => args.any prohibitedSyntax
   | .missing => false
 
@@ -53,5 +54,6 @@ elab "#audit_module" : command => do
       ("partial", toJson info.isPartial),
       ("compiler_auxiliary", toJson compilerAuxiliary),
       ("implemented_by", toJson (Compiler.getImplementedBy? env name |>.map Name.toString)),
+      ("extern", toJson (isExtern env name)),
       ("axioms", toJson (axioms.map Name.toString))]
   liftIO <| IO.println ("DISKTREE_AUDIT " ++ (Json.arr rows).compress)
