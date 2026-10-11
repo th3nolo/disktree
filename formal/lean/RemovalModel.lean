@@ -46,6 +46,11 @@ theorem approve_rejects_invalid (root : Path) (entries : List Entry)
     (h : ¬ valid root entries) : approve root entries = none := by
   simp [approve, h]
 
+-- Approval must accept every valid plan, not only the positive fixtures.
+theorem approve_accepts_iff_valid (root : Path) (entries : List Entry) :
+    (approve root entries).isSome = true ↔ valid root entries := by
+  by_cases h : valid root entries <;> simp [approve, h]
+
 theorem empty_root_rejected (entries : List Entry) : approve [] entries = none := by
   apply approve_rejects_invalid
   simp [valid]

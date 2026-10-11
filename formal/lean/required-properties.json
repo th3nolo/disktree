@@ -1,6 +1,7 @@
 {
   "RemovalModel.lean": [
     "DiskTree.approve_rejects_invalid",
+    "DiskTree.approve_accepts_iff_valid",
     "DiskTree.empty_root_rejected",
     "DiskTree.root_is_not_below_itself",
     "DiskTree.execute_prefix",
@@ -57,6 +58,7 @@
   ],
   "RequiredProperties.lean": [
     "DiskTree.Required.contract_approve_rejects_invalid",
+    "DiskTree.Required.contract_approve_accepts_iff_valid",
     "DiskTree.Required.contract_empty_root_rejected",
     "DiskTree.Required.contract_root_is_not_below_itself",
     "DiskTree.Required.contract_execute_prefix",

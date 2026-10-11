@@ -11,6 +11,10 @@ theorem contract_approve_rejects_invalid (root : Path) (entries : List Entry)
     (h : ¬ valid root entries) : approve root entries = none := by
   apply DiskTree.approve_rejects_invalid <;> assumption
 
+theorem contract_approve_accepts_iff_valid (root : Path) (entries : List Entry) :
+    (approve root entries).isSome = true ↔ valid root entries := by
+  exact DiskTree.approve_accepts_iff_valid root entries
+
 theorem contract_empty_root_rejected (entries : List Entry) : approve [] entries = none := by
   apply DiskTree.empty_root_rejected <;> assumption
 

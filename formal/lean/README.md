@@ -21,6 +21,11 @@ its descendants. Its input order corresponds to Rust's reverse preorder:
 children before their parents. `reverse_review_order` proves reversal of a
 parent-before-child order has the required deletion order; its assumption is
 explicit and Rust's DFS itself is not translated.
+`approve_accepts_iff_valid` requires approval to accept every valid plan and
+only valid plans, for arbitrary roots and lists. Its fixed statement contract
+and mandatory inventory entry protect acceptance beyond the positive fixtures;
+`run_complete`, which starts with an already certified `Approved`, does not
+establish this obligation by itself.
 The executor records an entry only when its deletion succeeds and stops that
 target on cancellation, failure, cloud refusal, or an exhausted schedule.
 
@@ -184,17 +189,24 @@ approval policy, the five-control run rule, empty/successful execution steps,
 identity-checked erasure and the exact `u64` maximum/saturating sum. They prevent
 the dependent theorem statements from silently following weakened meanings.
 
-Twenty-six auditor tests and fifteen mutation-classifier tests cover report
-validation and failure classification. Fourteen of these tests exercise the
+Twenty-six auditor tests and sixteen mutation-classifier tests cover report
+validation and failure classification. Fifteen of these tests exercise the
 real pinned compiler and are enabled in CI, including logically valid external
 definitions, separately applied attributes, programmatic environment attributes,
 and actual unrelated-typo/warning-only failures.
-Sixteen mutation checks first require a green baseline, then require the
+Seventeen mutation checks first require a green baseline, then require the
 expected proof failure within a named theorem's declaration span when removing
 each preflight control, returning an empty run, bypassing identity checks, allowing
 duplicate/parent-first paths, deleting a required proof or weakening its type.
 They also weaken containment/protection, raise the entry limit, and change
 the byte ceiling without changing the arithmetic theorem statements.
+The selective-approval mutation keeps all three current positive approval
+examples but refuses a separately checked valid plan under root `[42]`.
+A compiler setup probe checks that exact mutated approval body against the
+unchanged baseline policy/data definitions before the full mutated project
+must fail `approve_accepts_iff_valid`. Both the probe source/result and the
+named theorem failure are retained. This is a test of specification coverage;
+the production approval definition is unchanged.
 Each case fixes the expected theorem and diagnostic category independently
 of the changed definition. Unsolved proof obligations, a concrete proposition
 proved false, an arithmetic obligation, a fixed-definition mismatch, or the

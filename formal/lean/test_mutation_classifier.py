@@ -6,7 +6,10 @@ import subprocess
 import tempfile
 import unittest
 
-from test_mutations import ROOT, classify_failure, theorem_span
+from test_mutations import (
+    APPROVAL_BODY, ROOT, SELECTIVE_APPROVAL_BODY, classify_failure,
+    selective_approval_probe, theorem_span,
+)
 
 
 class MutationClassifierTests(unittest.TestCase):
@@ -132,6 +135,22 @@ class CompilerClassifierTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "no intended property failure"):
             self.check("theorem intended : True := by trivial\n"
                        "theorem other : False := by skip\n")
+
+    def test_selective_approval_probe_preserves_examples_and_refuses_valid_other_root(self):
+        source = (ROOT / "RemovalModel.lean").read_text(encoding="utf-8")
+        self.assertEqual(source.count(APPROVAL_BODY), 1)
+        with tempfile.TemporaryDirectory(prefix=".audit-test-", dir=ROOT) as raw:
+            directory = Path(raw).resolve()
+            self.assertEqual(directory.parent, ROOT)
+            model = directory / "RemovalModel.lean"
+            model.write_text(source, encoding="utf-8")
+            # The ordinary definition must fail the claimed selective refusal.
+            with self.assertRaisesRegex(RuntimeError, "selective approval setup probe failed"):
+                selective_approval_probe(directory, directory)
+            model.write_text(source.replace(APPROVAL_BODY, SELECTIVE_APPROVAL_BODY), encoding="utf-8")
+            result = selective_approval_probe(directory, directory)
+            self.assertEqual(result["accepted_baseline_examples"], 3)
+            self.assertEqual(result["independently_valid_refused_root"], [42])
 
 
 if __name__ == "__main__":

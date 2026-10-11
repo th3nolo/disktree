@@ -9,6 +9,9 @@ import tempfile
 
 ROOT = Path(__file__).parent.resolve()
 
+APPROVAL_BODY = "if h : valid root entries then some ⟨entries, h⟩ else none"
+SELECTIVE_APPROVAL_BODY = "if root = [1] then\n    " + APPROVAL_BODY + "\n  else none"
+
 # Fixed witnesses for each controlled source mutation. These are independent
 # of the changed definition; a file-level error is not a property failure.
 EXPECTED_FAILURES = {
@@ -28,6 +31,7 @@ EXPECTED_FAILURES = {
     "allow_parent_first": ("parent_before_child_rejected", "false_proposition"),
     "delete_required_theorem": ("contract_replaced_object_survives", "missing_requirement"),
     "weaken_required_statement": ("contract_replaced_object_survives", "statement"),
+    "approve_only_fixture_root": ("approve_accepts_iff_valid", "unsolved"),
 }
 
 DIAGNOSTIC = re.compile(
@@ -142,6 +146,43 @@ def mutate(root, file, old, new):
     path.write_text(text.replace(old, new), encoding="utf-8")
 
 
+def selective_approval_probe(root: Path, temporary: Path) -> dict:
+    # Compile the actual mutated approval body against the unchanged baseline
+    # policy/data definitions. This setup witness cannot count as the mutation
+    # rejection: the complete mutated project must still fail its named proof.
+    source = (root / "RemovalModel.lean").read_text(encoding="utf-8")
+    start = "def approve (root : Path) (entries : List Entry) : Option (Approved root) :=\n"
+    end = "\ntheorem approve_rejects_invalid"
+    if source.count(start) != 1 or source.count(end) != 1:
+        raise RuntimeError("approval probe definition anchor changed")
+    definition = start + source.split(start, 1)[1].split(end, 1)[0]
+    probe = (
+        "import RemovalModel\nimport NestedFixtures\n"
+        "set_option warningAsError true\nopen DiskTree\n"
+        "namespace ApprovalMutationProbe\n"
+        + definition.replace("def approve ", "def candidate ", 1) + "\n"
+        "#guard (candidate [1] [fixtureEntry 0]).isSome = true\n"
+        "#guard (candidate [1] fixtureOrder).isSome = true\n"
+        "#guard (candidate [1] nestedOrder).isSome = true\n"
+        "#guard valid [42] [⟨[42, 1], 314, false⟩]\n"
+        "#guard (candidate [42] [⟨[42, 1], 314, false⟩]).isSome = false\n"
+        "end ApprovalMutationProbe\n"
+    )
+    temporary = temporary.resolve()
+    if temporary.parent != ROOT or not root.resolve().is_relative_to(ROOT):
+        raise RuntimeError("approval probe directory escaped project")
+    path = temporary / "ApprovalMutationProbe.lean"
+    path.write_text(probe, encoding="utf-8")
+    result = subprocess.run(
+        ["lake", "env", "lean", "-DwarningAsError=true", str(path)],
+        cwd=ROOT, text=True, encoding="utf-8", capture_output=True, timeout=120,
+    )
+    if result.returncode:
+        raise RuntimeError(f"selective approval setup probe failed:\n{result.stdout}{result.stderr}")
+    return dict(exit_code=result.returncode, source=probe, log=result.stdout + result.stderr,
+                accepted_baseline_examples=3, independently_valid_refused_root=[42])
+
+
 def main():
     baseline = checked_build(ROOT)
     if baseline.returncode:
@@ -177,6 +218,8 @@ def main():
          "theorem replaced_object_survives :\n"
          "    applyRemovals replacedWorld replacementPlan.val [1, 2] = some 99 := by decide",
          "theorem replaced_object_survives : True := by trivial", "RequiredProperties.lean"),
+        ("approve_only_fixture_root", model,
+         APPROVAL_BODY, SELECTIVE_APPROVAL_BODY, model),
     ]
     if {case[0] for case in cases} != set(EXPECTED_FAILURES):
         raise RuntimeError("mutation witnesses do not match controlled cases")
@@ -192,12 +235,15 @@ def main():
                 "proof-audit.json", "mutation-results.json",
             ))
             mutate(copy, file, old, new)
+            setup_probe = (selective_approval_probe(copy, temporary)
+                           if name == "approve_only_fixture_root" else None)
             result = checked_build(copy)
             output = result.stdout + result.stderr
             theorem, category = EXPECTED_FAILURES[name]
             witness = classify_failure(result, copy, expected, theorem, category)
             evidence.append(dict(mutation=name, exit_code=result.returncode,
-                                 failed_module=expected, **witness, log=output))
+                                 failed_module=expected, **witness, log=output,
+                                 setup_probe=setup_probe))
             print(f"{name}: rejected by {expected}:{theorem} ({category})", flush=True)
     (ROOT / "mutation-results.json").write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
     print(f"{len(evidence)} weakened models rejected; baseline kernel build passed")
