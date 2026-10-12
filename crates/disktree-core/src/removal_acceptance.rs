@@ -76,7 +76,7 @@ fn events(plan: &Plan, cancelled: bool) -> Vec<RemovalEvent> {
         plan,
         RemovalMode::Permanent,
         TrashBackend::Unavailable,
-        &AtomicBool::new(cancelled),
+        &Arc::new(AtomicBool::new(cancelled)),
         &sender,
     );
     drop(sender);

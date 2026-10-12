@@ -268,19 +268,27 @@ fn centred_popup(
 }
 
 /// The one question disktree asks: a permanent deletion cannot be undone, so
-/// it is an alert dialog that names what goes and what comes back. The trash is
-/// reversible and needs no dialog.
+/// it is an alert dialog that names what goes and what comes back. Windows
+/// recycling also approves the checked selection through this dialog.
 fn delete_dialog(
     app: &Disktree,
     cx: &mut Context<'_, Disktree>,
 ) -> impl IntoElement {
     let plan = app.confirm_plan.clone().unwrap_or_default();
-    let title = match plan.targets.as_slice() {
-        [only] => format!(
+    let recycling = app.removal_mode == RemovalMode::Trash;
+    let title = match (recycling, plan.targets.as_slice()) {
+        (true, [only]) => format!(
+            "Move \u{201c}{}\u{201d} to the Recycle Bin?",
+            short_name(&only.path)
+        ),
+        (true, targets) => format!("Recycle {} items?", targets.len()),
+        (false, [only]) => format!(
             "Delete \u{201c}{}\u{201d} permanently?",
             short_name(&only.path)
         ),
-        targets => format!("Delete {} items permanently?", targets.len()),
+        (false, targets) => {
+            format!("Delete {} items permanently?", targets.len())
+        }
     };
     let advice = if app.trash_backend.is_available() {
         "Move them to the trash if you might need them again."
@@ -293,12 +301,21 @@ fn delete_dialog(
     let location = plan.targets.first().map_or_else(String::new, |target| {
         format!(" First selection: {}.", target.path.display())
     });
-    let body = format!(
-        "This projects {}.{entries}{location} Deleted files can\u{2019}t be \
+    let body = if recycling {
+        format!(
+            "{entries}{location} Restore these items from the Windows Recycle Bin. \
+         A failure never switches to permanent deletion. Cancellation stops \
+         pending items; completed moves stay in the Recycle Bin. Click Recycle \
+         or press Ctrl+Enter to confirm. Space is freed when the bin is emptied."
+        )
+    } else {
+        format!(
+            "This projects {}.{entries}{location} Deleted files can\u{2019}t be \
          recovered. Errors or cancellation can leave a partial deletion. \
          {advice} Click Delete or press Ctrl+Enter to confirm.",
-        human_bytes(plan.bytes())
-    );
+            human_bytes(plan.bytes())
+        )
+    };
     let cancel = cx.entity().downgrade();
     let actions = div()
         .flex()
@@ -320,7 +337,7 @@ fn delete_dialog(
         .child(
             dialog_button(
                 "delete-confirm",
-                "Delete",
+                if recycling { "Recycle" } else { "Delete" },
                 ButtonVariant::Danger,
                 cx,
             )
@@ -2074,7 +2091,7 @@ fn disk_section(
     let plan = app.plan();
     // The meter measures this volume, so it projects only the marks whose
     // bytes come back to it; the rest is said, never added.
-    let reclaiming = plan.reclaim();
+    let reclaiming = removal_projection(app, &plan);
     let after = space_info.after_removing(reclaiming);
     let highlight = palette::highlight(theme);
     let (number, unit) =
@@ -2228,10 +2245,16 @@ fn review_button(
                 .whitespace_nowrap()
                 .overflow_hidden()
                 .text_ellipsis()
-                .child(format!(
-                    "Review {count} marked · frees {}…",
-                    human_bytes(reclaiming)
-                )),
+                .child(
+                    if cfg!(windows) && app.removal_mode == RemovalMode::Trash {
+                        format!("Review {count} marked · Recycle Bin\u{2026}")
+                    } else {
+                        format!(
+                            "Review {count} marked · frees {}…",
+                            human_bytes(reclaiming)
+                        )
+                    },
+                ),
         )
         .child(gpui_omarchy::keycap("c", cx))
 }
@@ -2616,9 +2639,14 @@ fn review(
         .child(screen_header(
             "Review",
             &format!(
-                "{} marked \u{00b7} {} to free",
+                "{} marked \u{00b7} {} {}",
                 app.marks.len(),
-                human_bytes(plan.bytes())
+                human_bytes(plan.bytes()),
+                if app.removal_mode == RemovalMode::Trash {
+                    "to recycle"
+                } else {
+                    "to free"
+                },
             ),
             &theme,
             cx,
@@ -2762,7 +2790,7 @@ fn review_summary(
 ) -> Div {
     // What comes back to the volume on screen, which is all its meter can
     // project; the totals below say what the removal does in full.
-    let reclaiming = plan.reclaim();
+    let reclaiming = removal_projection(app, plan);
     // The part of the saving that lands elsewhere, said rather than added to
     // this volume's projection, so the two numbers cannot be confused.
     let left_out = not_counted(plan)
@@ -2774,7 +2802,15 @@ fn review_summary(
     let mode = button_group(
         "removal-mode",
         vec![
-            ChoiceItem::new("trash", "Move to trash").disabled(!trash),
+            ChoiceItem::new(
+                "trash",
+                if cfg!(windows) {
+                    "Recycle Bin"
+                } else {
+                    "Move to trash"
+                },
+            )
+            .disabled(!trash),
             ChoiceItem::new("permanent", "Delete permanently"),
         ],
         Some(usize::from(app.removal_mode == RemovalMode::Permanent)),
@@ -2854,7 +2890,11 @@ fn review_summary(
                     cx,
                 ))
                 .child(widgets::row(
-                    "Space freed",
+                    if app.removal_mode == RemovalMode::Trash {
+                        "Size to recycle"
+                    } else {
+                        "Space freed"
+                    },
                     human_bytes(plan.bytes()),
                     cx,
                 ))
@@ -2951,6 +2991,10 @@ fn commit_controls(
     let count = plan.targets.len();
     let noun = if count == 1 { "item" } else { "items" };
     let (label, variant) = match app.removal_mode {
+        RemovalMode::Trash if cfg!(windows) => (
+            format!("Recycle {count} {noun}\u{2026}"),
+            ButtonVariant::Primary,
+        ),
         RemovalMode::Trash => (
             format!("Move {count} {noun} to trash"),
             ButtonVariant::Primary,
@@ -3025,6 +3069,17 @@ fn review_footer(app: &Disktree, theme: &Theme, cx: &App) -> Div {
                     )
                 )),
         )
+}
+
+fn removal_projection(
+    app: &Disktree,
+    plan: &disktree_core::removal::Plan,
+) -> u64 {
+    if cfg!(windows) && app.removal_mode == RemovalMode::Trash {
+        0
+    } else {
+        plan.reclaim()
+    }
 }
 
 // ── running ─────────────────────────────────────────────────────────────
@@ -3115,9 +3170,19 @@ fn running(app: &Disktree, cx: &gpui_kit::Context<'_, Disktree>) -> Div {
                 .child(widgets::meter_row(
                     "progress",
                     format!(
-                        "{} removed · {} to free",
+                        "{} {} · {} {}",
                         summary.removed,
-                        human_bytes(summary.bytes)
+                        if app.removal_mode == RemovalMode::Trash {
+                            "recycled"
+                        } else {
+                            "removed"
+                        },
+                        human_bytes(summary.bytes),
+                        if app.removal_mode == RemovalMode::Trash {
+                            "in the bin"
+                        } else {
+                            "to free"
+                        },
                     ),
                     progress,
                     if app.removal_mode == RemovalMode::Permanent {
@@ -3202,7 +3267,9 @@ fn done(app: &Disktree, cx: &gpui_kit::Context<'_, Disktree>) -> Div {
                 .flex_row()
                 .gap(space::XXL)
                 .child(widgets::stat_colored(
-                    "removed",
+                    if app.removal_mode == RemovalMode::Trash {
+                        "recycled"
+                    } else { "removed" },
                     format!("{} items", summary.removed),
                     theme.success,
                     cx,
@@ -3219,7 +3286,9 @@ fn done(app: &Disktree, cx: &gpui_kit::Context<'_, Disktree>) -> Div {
                     cx,
                 ))
                 .when(cfg!(windows), |this| this.child(widgets::stat(
-                    "entries deleted", summary.entries.to_string(), cx,
+                    if app.removal_mode == RemovalMode::Trash {
+                        "entries recycled"
+                    } else { "entries deleted" }, summary.entries.to_string(), cx,
                 )))
                 .children(measured.map(|delta| {
                     widgets::stat_colored(

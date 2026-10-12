@@ -36,9 +36,11 @@ dependency trustworthy by itself, and hosted runner images still update.
 
 This closes the CFG and mutable-action-reference gaps recorded in the
 [October 8 review](https://github.com/th3nolo/disktree/blob/e63c66805c34df2e7f05a47bff01c4a2ac29b3a2/docs/security-review-2026-10-08.md).
-Windows recycling now fails closed instead of exposing the Recycle Bin
-target replacement window. Publisher signing, native desktop checks and
-Windows 10 compatibility remain separate.
+Windows recycling now uses reviewed native moves and validates the returned
+Recycle Bin item. Mismatched moves trigger restoration without overwriting
+new data; failures never fall back to permanent deletion. This compensation
+does not make the shell handoff atomic. Publisher signing, native desktop
+checks and Windows 10 compatibility remain separate.
 
 ## Adjacent Git executable regression
 
@@ -60,6 +62,9 @@ are used:
   `validation.json`. Evidence is kept even when validation fails.
 - `windows-git-helper-regression`: records the adjacent-helper test,
   including its control and the checkout probe.
+- `windows-recycle-regression` and `windows-arm64-recycle-regression`: JSON
+  records from actual recycling, restoration, cancellation and replacement
+  tests using disposable files and exact native receipts.
 - `windows-candidate`: a ZIP and its SHA-256 sidecar. This exists only
   after the lint, tests, executable scan, startup check, and ZIP scan pass.
 
@@ -128,12 +133,13 @@ Open the candidate with `$scanRoot` as its path and check:
 
 1. Scanning, navigation, and a cancelled confirmation leave both files and
    the outside sentinel intact.
-2. Review starts with recycling disabled. Enter must leave every file
-   intact. Choose permanent deletion explicitly, open its confirmation,
-   and cancel; every file must still be intact.
-3. After choosing permanent deletion explicitly, confirm removal of
-   `marked.txt`. Only that file is removed; `neighbour.txt` and the outside
-   sentinel remain intact.
+2. Review starts with Recycle Bin selected. Enter opens confirmation;
+   plain Enter in the dialog does not approve it. Cancel must leave every
+   file intact. Confirm recycling of `marked.txt`; only that file moves.
+   Restore it from the Windows Recycle Bin and compare its bytes and name.
+3. Choose permanent deletion explicitly, open its confirmation and cancel;
+   every file must remain intact. Confirm only the disposable `marked.txt`
+   if testing that separate mode. Keep both sentinels intact.
 4. After marking a file, rename it and create a new file at the old path.
    Refresh must drop the mark; the new occupant must survive.
    Also replace a scanned file with a populated directory before marking
@@ -152,6 +158,6 @@ filesystem, and observed results. Windows 10 compatibility and a real
 desktop GPU remain unverified until recorded; hosted Windows Server CI
 does not substitute for them.
 
-See [removal-safety.md](removal-safety.md) for the Windows recycling refusal
+See [removal-safety.md](removal-safety.md) for native recycling and compensation
 and the difference between object identity and immutable contents.
 

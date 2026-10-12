@@ -334,10 +334,16 @@ The same program, with Windows' answers to the questions above:
   panel offers **Restart as Administrator**, which reopens the same folder
   and options through the UAC prompt; during a widening scan, the wider
   folder being scanned.
-- **Move to trash** is disabled in this personal fork because the shell
-  could recycle a different file after its identity was checked. Removal
-  starts blocked; **Delete permanently** must be chosen explicitly and
-  confirmed. There is no automatic fallback from recycling to deletion.
+- **Recycle Bin** is the default. Windows reviews the marked selection and
+  asks for confirmation before moving it to the real Windows Recycle Bin.
+  Restore items there until the bin is emptied; recycling does not immediately
+  free their disk space. A failure stops the batch and never selects permanent
+  deletion. The worker checks the moved object's identity and folder contents;
+  an unexpected move triggers restoration without overwriting a new occupant.
+  Failed restoration reports where recovery is needed. This compensating
+  operation is not an atomic guarantee against concurrent path replacement;
+  see [removal safety](docs/removal-safety.md). **Delete permanently** remains
+  a separate, explicitly confirmed choice.
 - **Refused besides the rules below:** Windows, Program Files and
   ProgramData, what Windows keeps at the top of its drive (System Volume
   Information, Recovery, Boot, and the page and hibernation files, which

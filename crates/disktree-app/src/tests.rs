@@ -1161,7 +1161,7 @@ fn escape_in_the_delete_dialog_cancels(cx: &mut TestAppContext) {
 }
 
 /// With a trash on the machine, the reversible path is the default and
-/// commits without a dialog; the permanent one is a deliberate choice.
+/// Windows approves either mode through its checked confirmation dialog.
 #[gpui_kit::test]
 fn the_trash_is_the_default_when_there_is_one(cx: &mut TestAppContext) {
     cx.update(gpui_omarchy::init);
@@ -1177,17 +1177,58 @@ fn the_trash_is_the_default_when_there_is_one(cx: &mut TestAppContext) {
     }
 }
 
-/// A disabled trash stays blocked through keys; choosing permanent deletion
-/// still opens a cancellable confirmation rather than starting a worker.
+#[cfg(windows)]
 #[gpui_kit::test]
-fn disabled_recycling_never_promotes_a_commit_to_permanent_deletion(
+fn recycling_confirmation_checks_the_selection_and_escape_keeps_it(
     cx: &mut TestAppContext,
 ) {
     cx.update(gpui_omarchy::init);
     let temp = fixture();
     let (view, cx) = view_over(temp.path(), cx);
     update(&view, cx, |app, cx| {
-        app.trash_backend = TrashBackend::RecycleBin;
+        assert_eq!(app.removal_mode, RemovalMode::Trash);
+        assert!(app.trash_backend.is_available());
+        let crumbs = app
+            .crumbs_for_path(&temp.path().join("junk"))
+            .expect("node");
+        app.toggle_mark(&crumbs, cx);
+        app.screen = Screen::Review;
+        cx.notify();
+    });
+    press(cx, "enter");
+    assert!(read(&view, cx, |app| app.confirm_open));
+    assert!(read(&view, cx, |app| app
+        .confirm_plan
+        .as_ref()
+        .and_then(disktree_core::removal::Plan::reviewed_entries)
+        .is_some_and(|count| count >= 4)));
+    press(cx, "enter");
+    assert!(read(&view, cx, |app| app.run.is_none()));
+    assert!(read(&view, cx, |app| app.confirm_open));
+    press(cx, "escape");
+    assert!(!read(&view, cx, |app| app.confirm_open));
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+    assert_eq!(
+        std::fs::read(temp.path().join("junk/blob.bin")).expect("unchanged"),
+        vec![b'x'; 200_000]
+    );
+    assert_eq!(
+        std::fs::read(temp.path().join("keep/notes.txt")).expect("sentinel"),
+        vec![b'x'; 1000]
+    );
+}
+
+/// A disabled trash stays blocked through keys; choosing permanent deletion
+/// still opens a cancellable confirmation rather than starting a worker.
+#[gpui_kit::test]
+fn unavailable_trash_never_promotes_a_commit_to_permanent_deletion(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.trash_backend = TrashBackend::Unavailable;
         app.removal_mode = RemovalMode::Trash;
         let crumbs = app
             .crumbs_for_path(&temp.path().join("junk"))
@@ -1207,7 +1248,7 @@ fn disabled_recycling_never_promotes_a_commit_to_permanent_deletion(
     assert!(read(&view, cx, |app| {
         app.notice
             .as_ref()
-            .is_some_and(|(text, _)| text.contains("Recycling is disabled"))
+            .is_some_and(|(text, _)| text.contains("install trash-cli"))
     }));
 
     press(cx, "p");

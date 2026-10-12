@@ -377,6 +377,7 @@ pub struct Disktree {
     /// The permanent-deletion alert dialog is open. Trash needs no dialog: it
     /// is reversible, so it commits directly.
     pub confirm_open: bool,
+    confirmation_mode: RemovalMode,
     /// The exact list shown in the final confirmation, never rebuilt there.
     pub confirm_plan: Option<Plan>,
     pub preparing_delete: bool,
@@ -510,8 +511,7 @@ impl Disktree {
             treemap_origin: Rc::new(Cell::new(Point::new(px(0.), px(0.)))),
             treemap_size: Rc::new(Cell::new(size(px(0.), px(0.)))),
             marks: Marks::default(),
-            // Disabled Windows recycling must not make permanent deletion
-            // the default. It requires a deliberate mode change and dialog.
+            // Recycling is the default; permanent deletion remains deliberate.
             removal_mode: if trash_backend == TrashBackend::Unavailable {
                 RemovalMode::Permanent
             } else {
@@ -519,6 +519,7 @@ impl Disktree {
             },
             trash_backend,
             confirm_open: false,
+            confirmation_mode: RemovalMode::Trash,
             confirm_plan: None,
             preparing_delete: false,
             prepare_cancel: Arc::new(AtomicBool::new(false)),
@@ -2146,8 +2147,8 @@ impl Disktree {
 
     // ── removal ─────────────────────────────────────────────────────────
 
-    /// The review screen's commit: move to the trash at once, or ask first for
-    /// a permanent deletion, which cannot be undone.
+    /// Approve a frozen Windows selection for either mode, or trash directly
+    /// elsewhere. Permanent deletion always requires the approval dialog.
     pub fn commit(&mut self, cx: &mut Context<'_, Self>) {
         if self.confirm_open || self.preparing_delete || self.run.is_some() {
             return;
@@ -2156,16 +2157,26 @@ impl Disktree {
         if plan.is_empty() {
             return;
         }
+        if self.removal_mode == RemovalMode::Trash
+            && !self.trash_backend.is_available()
+        {
+            self.notice =
+                Some((self.trash_backend.detail().into(), Status::Warning));
+            cx.notify();
+            return;
+        }
         match self.removal_mode {
-            RemovalMode::Trash => self.begin_removal(cx),
-            RemovalMode::Permanent => {
+            RemovalMode::Trash if !cfg!(windows) => self.begin_removal(cx),
+            RemovalMode::Permanent | RemovalMode::Trash => {
+                let mode = self.removal_mode;
+                self.confirmation_mode = mode;
                 self.preparing_delete = true;
                 self.prepare_epoch += 1;
                 let epoch = self.prepare_epoch;
                 let cancel = Arc::new(AtomicBool::new(false));
                 self.prepare_cancel = Arc::clone(&cancel);
                 self.notice = Some((
-                    "Checking the deletion list; Escape cancels".into(),
+                    "Checking the selection; Escape cancels".into(),
                     Status::Neutral,
                 ));
                 let task = cx
@@ -2181,8 +2192,7 @@ impl Disktree {
                         match result {
                             Ok(plan)
                                 if this.screen == Screen::Review
-                                    && this.removal_mode
-                                        == RemovalMode::Permanent
+                                    && this.removal_mode == mode
                                     && plan.root == this.root_path
                                     && plan.targets == this.plan().targets =>
                             {
@@ -2200,7 +2210,7 @@ impl Disktree {
                             }
                             Err(error) => {
                                 this.notice = Some((
-                                    format!("Deletion refused: {error}"),
+                                    format!("Removal refused: {error}"),
                                     Status::Warning,
                                 ));
                             }
@@ -2224,7 +2234,8 @@ impl Disktree {
         };
         self.confirm_open = false;
         self.focus_request = Some(FocusTarget::Root);
-        if self.removal_mode != RemovalMode::Permanent
+        let mode_changed = self.removal_mode != self.confirmation_mode;
+        if mode_changed
             || plan.root != self.root_path
             || plan.targets != self.plan().targets
         {
@@ -2296,8 +2307,8 @@ impl Disktree {
     }
 
     pub fn begin_removal(&mut self, cx: &mut Context<'_, Self>) {
-        // Permanent deletion must consume an approved plan through the dialog.
-        if self.removal_mode == RemovalMode::Permanent {
+        // Both Windows modes consume the dialog's prepared plan.
+        if self.removal_mode == RemovalMode::Permanent || cfg!(windows) {
             return;
         }
         let plan = self.plan();

@@ -74,7 +74,11 @@ PC deletion approval additionally requires recorded desktop results on the
 intended environment. Keep important-data deletion blocked until those
 results exist and a recoverable-copy strategy has been verified.
 
-Windows recycling remains disabled. Permanent removal has no rollback and
+Windows recycling is the default, with native receipt validation and
+compensating restoration on a detected replacement. It never converts a
+failure into permanent deletion. This native path is not covered by the
+permanent worker's atomic handle binding or Lean filesystem model; see
+[removal safety](removal-safety.md). Permanent removal has no rollback and
 may finish only part of a reviewed directory before cancellation, a late
 filesystem error or process exit. Cancellation is checked before each entry,
 but not inside an in-flight system call. The final approved descendant list

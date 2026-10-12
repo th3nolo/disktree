@@ -26,9 +26,17 @@ use std::path::{Component, Path, PathBuf, Prefix};
 
 #[path = "windows_removal.rs"]
 mod removal;
+#[path = "windows_trash.rs"]
+mod trash;
 pub use removal::{
     REVIEW_ENTRY_LIMIT, ReviewedTree, remove_reviewed, review_tree,
 };
+pub use trash::recycle_reviewed;
+
+/// Entry paths whose completed recycle receipt was checked by the worker.
+pub fn recycled_paths(review: &ReviewedTree) -> impl Iterator<Item = &Path> {
+    review.paths()
+}
 
 use windows_sys::Win32::Foundation::{
     ERROR_INVALID_FUNCTION, ERROR_INVALID_LEVEL, ERROR_INVALID_PARAMETER,
