@@ -41,6 +41,8 @@ EXPECTED_FAILURES = {
     "weaken_required_statement": ("contract_replaced_object_survives", "statement"),
     "approve_only_fixture_root": ("approve_accepts_iff_valid", "unsolved"),
     "approve_substitutes_empty_plan": ("approve_exact_result", "unsolved"),
+    "policy_continues_after_cancel": ("next_failure_stops", "false_proposition"),
+    "policy_skips_cloud_check": ("decision_rule", "false_proposition"),
 }
 
 DIAGNOSTIC = re.compile(
@@ -258,6 +260,12 @@ def main():
          APPROVAL_BODY, SELECTIVE_APPROVAL_BODY, model),
         ("approve_substitutes_empty_plan", model,
          APPROVAL_BODY, EMPTY_APPROVAL_BODY, model),
+        ("policy_continues_after_cancel", "RemovalPolicy.lean",
+         "  | _, _ => none", "  | .cancellation, false => some .cloud\n  | _, _ => none",
+         "RemovalPolicy.lean"),
+        ("policy_skips_cloud_check", "RemovalPolicy.lean",
+         "  | .cancellation, true => some .cloud", "  | .cancellation, true => some .delete",
+         "RemovalPolicy.lean"),
     ]
     if {case[0] for case in cases} != set(EXPECTED_FAILURES):
         raise RuntimeError("mutation witnesses do not match controlled cases")

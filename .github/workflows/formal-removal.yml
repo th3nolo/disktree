@@ -83,6 +83,8 @@ jobs:
             formal/lean/mutation-results.json
             formal/lean/differential-lean-results.txt
             formal/lean/differential-cases.txt
+            formal/lean/policy-lean-results.txt
+            formal/lean/policy-cases.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -124,6 +126,34 @@ jobs:
           cargo test --locked -p disktree-core generated_tree_schedules_match_lean_and_native_effects -- --nocapture 2>&1 | Tee-Object (Join-Path $evidence 'native-tests.log')
           if ($LASTEXITCODE -ne 0) { throw 'Model/native filesystem comparison failed' }
           if ((Get-FileHash $env:DISKTREE_LEAN_RESULTS).Hash -ne (Get-FileHash $env:DISKTREE_NATIVE_RESULTS).Hash) { throw 'Model/native transcript hashes differ' }
+      - name: Compare the complete removal policy domain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'differential-evidence'
+          $model = Join-Path $evidence 'model'
+          if ((Get-FileHash (Join-Path $model 'policy-cases.txt')).Hash -ne (Get-FileHash 'formal/lean/policy-cases.txt').Hash) { throw 'Model and native policy contracts differ' }
+          $env:DISKTREE_LEAN_POLICY_RESULTS = Join-Path $model 'policy-lean-results.txt'
+          $env:DISKTREE_NATIVE_POLICY_RESULTS = Join-Path $evidence 'policy-native-results.txt'
+          cargo test --locked -p disktree-core removal_policy_transitions_match_lean -- --nocapture 2>&1 | Tee-Object (Join-Path $evidence 'policy-native-tests.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Model/native removal policy comparison failed' }
+          if ((Get-FileHash $env:DISKTREE_LEAN_POLICY_RESULTS).Hash -ne (Get-FileHash $env:DISKTREE_NATIVE_POLICY_RESULTS).Hash) { throw 'Model/native policy transcript hashes differ' }
+      - name: Refuse a changed policy transcript
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'differential-evidence'
+          $lines = [IO.File]::ReadAllLines((Join-Path $evidence 'model/policy-lean-results.txt'))
+          if ($lines[1] -ne 'cancel|0|stop') { throw 'Expected policy negative-control anchor changed' }
+          $lines[1] = 'cancel|0|cloud'
+          $env:DISKTREE_LEAN_POLICY_RESULTS = Join-Path $evidence 'changed-policy-results.txt'
+          [IO.File]::WriteAllText($env:DISKTREE_LEAN_POLICY_RESULTS, ($lines -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
+          $env:DISKTREE_NATIVE_POLICY_RESULTS = Join-Path $evidence 'negative-policy-native-results.txt'
+          cargo test --locked -p disktree-core removal_policy_transitions_match_lean -- --nocapture 2>&1 | Tee-Object (Join-Path $evidence 'policy-negative-control.log')
+          $code = $LASTEXITCODE
+          if ($code -eq 0 -or -not (Select-String -LiteralPath (Join-Path $evidence 'policy-negative-control.log') -SimpleMatch 'Lean/Rust removal policy differs')) { throw 'Changed policy did not fail in the intended comparison' }
+          @{ rejected = $true; exit_code = $code; changed_transition = 'cancel|0|cloud' } | ConvertTo-Json | Set-Content (Join-Path $evidence 'policy-negative-control.json')
+          exit 0
       - name: Refuse a changed model transcript
         shell: pwsh
         run: |

@@ -1,6 +1,7 @@
 import NestedFixtures
 import SafetyProperties
 import DifferentialFixtures
+import RemovalPolicy
 
 set_option warningAsError true
 
@@ -58,3 +59,4 @@ def main : IO Unit := do
     throw (IO.userError s!"expected thirteen nested fixtures; got {nestedCount}")
   IO.println s!"{count} flat and {nestedCount} nested shared fixtures passed through run and runtime approve/runObserved"
   DifferentialFixtures.check
+  DiskTree.RemovalPolicy.check

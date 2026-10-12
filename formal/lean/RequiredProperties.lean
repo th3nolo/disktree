@@ -1,4 +1,5 @@
 import SafetyProperties
+import RemovalPolicy
 import NestedFixtures
 
 set_option warningAsError true
@@ -287,4 +288,32 @@ theorem contract_u64_maximum : u64Max = 18446744073709551615 := rfl
 
 theorem contract_byte_sum (left right : Nat) :
     saturatingAdd left right = min 18446744073709551615 (left + right) := rfl
+
+theorem contract_policy_next (step : RemovalPolicy.Step) (passed : Bool) :
+    RemovalPolicy.next step passed =
+      if passed then (match step with
+        | .cancellation => some .cloud
+        | .cloud => some .delete
+        | .delete => none) else none := by
+  cases step <;> cases passed <;> rfl
+
+theorem contract_policy_decision (c g d : Bool) :
+    RemovalPolicy.decision c g d =
+      if c then (if g then (if d then .remove else .failure) else .cloudRefusal)
+      else .cancel := by
+  exact RemovalPolicy.decision_rule c g d
+
+theorem contract_policy_execute (entries : List Entry)
+    (observations : List RemovalPolicy.Observations) :
+    RemovalPolicy.execute entries observations =
+      execute entries (observations.map fun observed =>
+        if observed.1 then
+          (if observed.2.1 then (if observed.2.2 then .remove else .failure) else .cloudRefusal)
+        else .cancel) := by
+  rw [RemovalPolicy.execute_matches_model]
+  congr 1
+  apply List.map_congr_left
+  intro observed _
+  exact RemovalPolicy.decision_rule _ _ _
+
 end DiskTree.Required

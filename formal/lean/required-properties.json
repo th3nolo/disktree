@@ -122,7 +122,10 @@
     "DiskTree.Required.contract_successful_step",
     "DiskTree.Required.contract_erase_rule",
     "DiskTree.Required.contract_u64_maximum",
-    "DiskTree.Required.contract_byte_sum"
+    "DiskTree.Required.contract_byte_sum",
+    "DiskTree.Required.contract_policy_next",
+    "DiskTree.Required.contract_policy_decision",
+    "DiskTree.Required.contract_policy_execute"
   ],
   "NestedFixtures.lean": [
     "DiskTree.nested_plan_is_accepted",
