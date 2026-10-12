@@ -109,6 +109,54 @@ prefix, unique names, children before parents, remaining selected bytes,
 survival of the late child, and outside canaries. These tests delete only
 their owned temporary fixture on a hosted Windows runner.
 
+## Generated differential filesystem cases
+
+`generate_differential_cases.py` independently generates the committed
+`differential-cases.txt` corpus from sixteen fixed seeds. The corpus has
+16 completions, 235 cancellation boundaries and 71 nonempty-directory
+failures: 322 scenarios over empty, deep, wide and mixed trees. Its adjacency
+traversal fixes reverse preorder without reading Rust's reviewed list.
+CI checks regeneration byte for byte and retains the original 19 fixtures.
+
+`DifferentialFixtures.lean` calls the actual runtime `approve`, `run` and
+`runObserved`, then computes the resulting namespace with `applyRemovals`.
+It checks the generator's independent expected prefix and remaining IDs,
+plus unselected canaries. For a directory failure, the unapproved late child
+is added to the model world after the successful prefix, at the same boundary
+as the native callback. This runner is included in the environment audit;
+its generated structure lemmas are not additional deletion guarantees.
+
+`removal_differential.rs` creates a fresh owned temporary tree per scenario
+and calls real Windows `review_tree` and `remove_reviewed`. Cancellation uses
+the actual atomic flag. Failure creates a new unapproved child after
+preflight and requires Windows' `DirectoryNotEmpty` error before deleting
+that parent. The test reads every surviving file's complete bytes, checks
+the initial object identity and kind, enumerates remaining directory names,
+and preserves the late child and three inside/outside control files. It also
+checks unique deletions and children before parents. No production deletion
+hook or error-return mock is introduced.
+
+The formal workflow's Windows x64 and native ARM64 jobs download the Linux
+Lean transcript from the same workflow run. Both the actual checkout SHA
+and corpus hash must match before deletion. The native observed transcript
+must equal Lean's transcript byte for byte. A changed removed-ID field must
+produce a named comparison failure; an unrelated build error cannot pass
+that negative control. CI retains inputs, both transcripts, logs and the
+negative-control witness even on failure.
+
+Normal Windows unit tests also check all 322 native effects against the
+independent corpus. `DISKTREE_LEAN_RESULTS` enables direct transcript
+comparison; exporting through `DISKTREE_NATIVE_RESULTS` requires that model
+input. The dedicated CI jobs always supply both and require the output hash.
+
+This is finite single-target correspondence testing. Lean models namespace
+names and symbolic object identities, not file bytes; byte preservation is
+an additional native assertion. Cancellation before the first deletion may
+stop native preflight, so matching effects do not imply identical control
+paths. Failures cover these concrete late-child refusals, not all I/O errors,
+process crashes, concurrent interleavings, cloud providers or Win32 parsing.
+There is still no whole-Rust refinement proof or cancellation-latency bound.
+
 ## External contracts and exclusions
 
 - Component IDs assume correct Windows normalization, case/alias handling,

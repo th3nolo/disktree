@@ -54,6 +54,7 @@ jobs:
           set -euo pipefail
           lean --version | tee lean-version.txt
           git rev-parse HEAD > checked-commit.txt
+          python3 generate_differential_cases.py --check
           lake build
           LEAN_AUDIT_INTEGRATION=1 python3 -m unittest -v test_audit.py test_mutation_classifier.py 2>&1 | tee auditor-tests.log
           python3 audit.py proof-audit.json | tee proof-audit.log
@@ -80,5 +81,72 @@ jobs:
             formal/lean/fixture-results.log
             formal/lean/mutation-tests.log
             formal/lean/mutation-results.json
+            formal/lean/differential-lean-results.txt
+            formal/lean/differential-cases.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  differential:
+    name: Rust-Lean effects (${{ matrix.os }})
+    needs: lean
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      RUSTFLAGS: '-C target-feature=+crt-static -C control-flow-guard=yes'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: '1.97'
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # Official v4.3.0, released 2025-04-24; reviewed immutable revision.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: lean-removal-evidence
+          path: ${{ runner.temp }}/differential-evidence/model
+      - name: Compare real filesystem effects with Lean
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'differential-evidence'
+          $model = Join-Path $evidence 'model'
+          $checked = (Get-Content -LiteralPath (Join-Path $model 'checked-commit.txt') -Raw).Trim()
+          $actual = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $checked -ne $actual) { throw 'Model and native checkouts differ' }
+          if ((Get-FileHash (Join-Path $model 'differential-cases.txt')).Hash -ne (Get-FileHash 'formal/lean/differential-cases.txt').Hash) { throw 'Model and native corpora differ' }
+          $env:DISKTREE_LEAN_RESULTS = Join-Path $model 'differential-lean-results.txt'
+          $env:DISKTREE_NATIVE_RESULTS = Join-Path $evidence 'native-results.txt'
+          $actual | Set-Content (Join-Path $evidence 'native-checked-commit.txt')
+          cargo test --locked -p disktree-core generated_tree_schedules_match_lean_and_native_effects -- --nocapture 2>&1 | Tee-Object (Join-Path $evidence 'native-tests.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Model/native filesystem comparison failed' }
+          if ((Get-FileHash $env:DISKTREE_LEAN_RESULTS).Hash -ne (Get-FileHash $env:DISKTREE_NATIVE_RESULTS).Hash) { throw 'Model/native transcript hashes differ' }
+      - name: Refuse a changed model transcript
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'differential-evidence'
+          $lines = [IO.File]::ReadAllLines((Join-Path $evidence 'model/differential-lean-results.txt'))
+          $fields = $lines[1].Split('|')
+          if ($fields[0] -ne 's00-complete-01' -or $fields[1] -ne '0') { throw 'Expected negative-control anchor changed' }
+          $fields[1] = ''
+          $lines[1] = $fields -join '|'
+          $env:DISKTREE_LEAN_RESULTS = Join-Path $evidence 'changed-model-results.txt'
+          [IO.File]::WriteAllText($env:DISKTREE_LEAN_RESULTS, ($lines -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
+          $env:DISKTREE_NATIVE_RESULTS = Join-Path $evidence 'negative-native-results.txt'
+          cargo test --locked -p disktree-core generated_tree_schedules_match_lean_and_native_effects -- --nocapture 2>&1 | Tee-Object (Join-Path $evidence 'negative-control.log')
+          $code = $LASTEXITCODE
+          if ($code -eq 0 -or -not (Select-String -LiteralPath (Join-Path $evidence 'negative-control.log') -SimpleMatch 'Lean/native filesystem effects differ in s00-complete-01')) { throw 'Changed transcript did not fail in the intended comparison' }
+          @{ rejected = $true; exit_code = $code; witness = 's00-complete-01'; changed_field = 'removed' } | ConvertTo-Json | Set-Content (Join-Path $evidence 'negative-control.json')
+          exit 0
+      - name: Retain differential evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: differential-effects-${{ matrix.os }}
+          path: ${{ runner.temp }}/differential-evidence
           if-no-files-found: error
           retention-days: 14

@@ -1,5 +1,6 @@
 import NestedFixtures
 import SafetyProperties
+import DifferentialFixtures
 
 set_option warningAsError true
 
@@ -56,3 +57,4 @@ def main : IO Unit := do
   unless nestedCount == 13 do
     throw (IO.userError s!"expected thirteen nested fixtures; got {nestedCount}")
   IO.println s!"{count} flat and {nestedCount} nested shared fixtures passed through run and runtime approve/runObserved"
+  DifferentialFixtures.check

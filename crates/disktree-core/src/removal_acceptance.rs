@@ -652,3 +652,5 @@ fn shared_lean_nested_fixtures_match_native_windows_removal() {
         fixture.assert_canaries();
     }
 }
+#[path = "removal_differential.rs"]
+mod differential;

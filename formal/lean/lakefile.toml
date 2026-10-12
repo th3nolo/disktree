@@ -4,7 +4,7 @@ defaultTargets = ["RemovalModel", "checkFixtures"]
 
 [[lean_lib]]
 name = "RemovalModel"
-roots = ["RemovalModel", "SafetyProperties", "RequiredProperties", "NestedFixtures", "AuditSupport"]
+roots = ["RemovalModel", "SafetyProperties", "RequiredProperties", "NestedFixtures", "AuditSupport", "DifferentialFixtures"]
 
 [[lean_exe]]
 name = "checkFixtures"

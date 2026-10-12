@@ -83,9 +83,18 @@ project issue records.
 
 ## Remaining verification work
 
-1. Run the actual GUI candidate in an isolated disposable Windows VM and
-   perform an end-to-end disposable cloud-provider check. Local registered
-   Cloud Files roots and automated GUI harnesses are useful but narrower.
+The generated differential corpus in `formal/lean/differential-cases.txt`
+adds 322 reproducible cases on sixteen trees. The formal workflow compares
+actual Lean namespace effects with real Windows x64/ARM64 deletion traces;
+native checks additionally read survivor bytes and identities and enumerate
+remaining names. A changed-model negative control must fail at the intended
+comparison. See the [correspondence scope](../formal/lean/README.md#generated-differential-filesystem-cases).
+These finite single-target cases do not close the broader work below.
+
+1. Preserve the candidate-specific isolated GUI results recorded in
+   [PR #9](https://github.com/th3nolo/disktree/pull/9). Intended-PC acceptance
+   and end-to-end disposable cloud-provider checks remain separate. Local
+   registered Cloud Files roots and automated harnesses are narrower.
 2. Fuzz Win32 directory/MFT parsing and normalization, including unusual
    Unicode, long paths, invalid buffers, aliases, stream names and ReFS IDs.
    Supply malformed data through owned fixtures, not filesystem corruption.
