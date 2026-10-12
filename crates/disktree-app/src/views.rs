@@ -2639,9 +2639,14 @@ fn review(
         .child(screen_header(
             "Review",
             &format!(
-                "{} marked \u{00b7} {} to free",
+                "{} marked \u{00b7} {} {}",
                 app.marks.len(),
-                human_bytes(plan.bytes())
+                human_bytes(plan.bytes()),
+                if app.removal_mode == RemovalMode::Trash {
+                    "to recycle"
+                } else {
+                    "to free"
+                },
             ),
             &theme,
             cx,
@@ -2885,7 +2890,11 @@ fn review_summary(
                     cx,
                 ))
                 .child(widgets::row(
-                    "Space freed",
+                    if app.removal_mode == RemovalMode::Trash {
+                        "Size to recycle"
+                    } else {
+                        "Space freed"
+                    },
                     human_bytes(plan.bytes()),
                     cx,
                 ))
@@ -3161,9 +3170,19 @@ fn running(app: &Disktree, cx: &gpui_kit::Context<'_, Disktree>) -> Div {
                 .child(widgets::meter_row(
                     "progress",
                     format!(
-                        "{} removed · {} to free",
+                        "{} {} · {} {}",
                         summary.removed,
-                        human_bytes(summary.bytes)
+                        if app.removal_mode == RemovalMode::Trash {
+                            "recycled"
+                        } else {
+                            "removed"
+                        },
+                        human_bytes(summary.bytes),
+                        if app.removal_mode == RemovalMode::Trash {
+                            "in the bin"
+                        } else {
+                            "to free"
+                        },
                     ),
                     progress,
                     if app.removal_mode == RemovalMode::Permanent {

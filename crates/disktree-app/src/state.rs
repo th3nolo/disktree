@@ -2176,7 +2176,7 @@ impl Disktree {
                 let cancel = Arc::new(AtomicBool::new(false));
                 self.prepare_cancel = Arc::clone(&cancel);
                 self.notice = Some((
-                    "Checking the deletion list; Escape cancels".into(),
+                    "Checking the selection; Escape cancels".into(),
                     Status::Neutral,
                 ));
                 let task = cx
@@ -2210,7 +2210,7 @@ impl Disktree {
                             }
                             Err(error) => {
                                 this.notice = Some((
-                                    format!("Deletion refused: {error}"),
+                                    format!("Removal refused: {error}"),
                                     Status::Warning,
                                 ));
                             }
