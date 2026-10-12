@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::removal::{EntryIdentity, addressable, entry_kind};
+use crate::removal_policy::{self, Step};
 use crate::tree::NodeKind;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
@@ -188,9 +189,11 @@ pub fn remove_reviewed(
     for (removed, (entry, file)) in
         review.entries.iter().zip(opened).rev().enumerate()
     {
-        let result = check_cancel(cancel)
-            .and_then(|()| refuse_cloud(&entry.path, &file, &roots))
-            .and_then(|()| delete_opened(&file));
+        let result = removal_policy::run(|step| match step {
+            Step::Cancellation => check_cancel(cancel),
+            Step::Cloud => refuse_cloud(&entry.path, &file, &roots),
+            Step::Delete => delete_opened(&file),
+        });
         if let Err(error) = result {
             return Err(io::Error::new(
                 error.kind(),

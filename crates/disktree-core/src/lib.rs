@@ -15,6 +15,8 @@ mod macos;
 #[cfg(windows)]
 mod mft;
 pub mod removal;
+#[cfg(any(windows, test))]
+mod removal_policy;
 pub mod scan;
 pub mod scan_threads;
 pub mod size;

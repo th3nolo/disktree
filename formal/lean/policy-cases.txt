@@ -1,0 +1,7 @@
+phase|passed|next
+cancel|0|stop
+cancel|1|cloud
+cloud|0|stop
+cloud|1|delete
+delete|0|stop
+delete|1|stop

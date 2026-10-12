@@ -157,6 +157,34 @@ paths. Failures cover these concrete late-child refusals, not all I/O errors,
 process crashes, concurrent interleavings, cloud providers or Win32 parsing.
 There is still no whole-Rust refinement proof or cancellation-latency bound.
 
+## Production continuation policy
+
+`crates/disktree-core/src/removal_policy.rs` contains a three-state rule used
+by the production Windows deletion loop. Each entry checks cancellation,
+then cloud protection, then performs the handle-based deletion. A failed
+observation stops immediately and retains its original error; progress is
+reported only after the deletion succeeds and its handle closes.
+
+`RemovalPolicy.lean` interprets the same six state/boolean transitions and
+proves the outcome rule for every observation combination. Its recursive
+entry executor equals `RemovalModel.execute` for every list of entries and
+observations, so the model's prefix property applies. Fixed contracts in
+`RequiredProperties.lean` protect the transition, outcome and executor
+statements. Two additional mutations must fail at named property witnesses:
+continuing after cancellation and skipping the cloud check.
+
+The shared `policy-cases.txt` contains the complete transition domain.
+Windows x64 and ARM64 CI compare transcripts produced by the actual Rust
+function and Lean evaluator, and must reject a changed cancellation result.
+Native interpreter tests exhaust all eight external observation combinations
+and check call order, short-circuiting and error preservation. The original
+322 real filesystem scenarios exercise the production adapter as well.
+
+The universal executor proof is about Lean. The full-domain comparison
+links the small Rust rule to those semantics through tests; Rust compiler
+correctness, its loop implementation, Win32 observations and handle lifetimes
+remain outside that proof. This is not a machine-checked Rust refinement.
+
 ## External contracts and exclusions
 
 - Component IDs assume correct Windows normalization, case/alias handling,
