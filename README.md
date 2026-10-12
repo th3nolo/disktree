@@ -1,5 +1,13 @@
 # disktree
 
+This is the personal fork at [th3nolo/disktree](
+https://github.com/th3nolo/disktree), based on [tobi/disktree](
+https://github.com/tobi/disktree). It includes additional Windows removal
+guards, native recycling and formal removal checks. Run `disktree --version`
+to identify the build and its source repository. Windows candidates from
+this fork are available in the `windows-candidate` artifact of a successful
+[CI run](https://github.com/th3nolo/disktree/actions/workflows/ci.yml).
+
 ![disktree: a home directory as a treemap, coloured by kind of data, with reclaimable space hatched and the selection, findings and free space in the side panel](assets/screenshot.png)
 
 Find what is filling a disk, mark what should go, and remove it — with the
@@ -18,12 +26,12 @@ Omarchy theme and behaves like the rest of the desktop.
 ## Install
 
 Download `disktree-*-x86_64-linux.tar.gz` (`aarch64-linux` on ARM) from the
-[latest release](https://github.com/tobi/disktree/releases/latest), unpack
+[upstream release](https://github.com/tobi/disktree/releases/latest), unpack
 it, and run `./install.sh` inside (or just copy `disktree` onto your
 `PATH`). Or build it:
 
 ```sh
-git clone https://github.com/tobi/disktree
+git clone https://github.com/th3nolo/disktree
 cd disktree
 make install
 ```

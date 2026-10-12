@@ -47,6 +47,14 @@ struct Args {
     power: Option<power::PowerEfficiency>,
 }
 
+const VERSION: &str = concat!(
+    "disktree ",
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("CARGO_PKG_REPOSITORY"),
+    ")",
+);
+
 const USAGE: &str = "\
 disktree — a treemap of what is using your disk
 
@@ -79,6 +87,7 @@ options:
                         best-effort host CPU budget; 0 disables it (80)
       --metric files    rank by file count instead of bytes
   -h, --help            show this help
+  -V, --version         show the version and source repository
 ";
 
 fn main() -> Result<()> {
@@ -153,7 +162,8 @@ fn run() -> Result<()> {
                         titlebar: Some(gpui_kit::TitlebarOptions {
                             title: Some(
                                 format!(
-                                    "disktree · {}",
+                                    "disktree {} · {}",
+                                    env!("CARGO_PKG_VERSION"),
                                     marks::display_path(
                                         &title_root,
                                         home.as_deref(),
@@ -233,7 +243,11 @@ fn parse_args_with_power(
     while let Some(arg) = args.next() {
         match arg.to_str().unwrap_or_default() {
             "-h" | "--help" => {
-                println!("{USAGE}");
+                println!("{VERSION}\n\n{USAGE}");
+                std::process::exit(0);
+            }
+            "-V" | "--version" => {
+                println!("{VERSION}");
                 std::process::exit(0);
             }
             "-a" | "--apparent-size" => options.apparent_size = true,
