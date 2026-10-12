@@ -12,19 +12,19 @@ use std::time::SystemTime;
 // a bigger selection must be split, never silently use weaker recursion.
 pub const REVIEW_ENTRY_LIMIT: usize = 20_000;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ReviewedTree {
     entries: Vec<ReviewedEntry>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ReviewedEntry {
     path: PathBuf,
     stamp: Stamp,
     children: Vec<PathBuf>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Stamp {
     identity: EntryIdentity,
     kind: NodeKind,
@@ -53,6 +53,9 @@ impl Stamp {
 }
 
 impl ReviewedTree {
+    pub(super) fn paths(&self) -> impl Iterator<Item = &Path> {
+        self.entries.iter().map(|entry| entry.path.as_path())
+    }
     pub const fn len(&self) -> usize {
         self.entries.len()
     }
@@ -63,6 +66,81 @@ impl ReviewedTree {
         self.entries
             .first()
             .is_some_and(|entry| entry.stamp.kind.is_dir())
+    }
+
+    /// Verify a shell result by identity, contents and relative membership.
+    /// A moved folder must not hide entries added after the approved review.
+    pub(super) fn matches_at(&self, path: &Path) -> io::Result<()> {
+        let original = self
+            .entries
+            .first()
+            .ok_or_else(|| io::Error::other("the recycling list is empty"))?;
+        for entry in &self.entries {
+            let relative = entry
+                .path
+                .strip_prefix(&original.path)
+                .map_err(io::Error::other)?;
+            let actual = if relative.as_os_str().is_empty() {
+                path.to_path_buf()
+            } else {
+                path.join(relative)
+            };
+            if Stamp::capture(&inspection(&actual)?)? != entry.stamp {
+                return Err(io::Error::other(
+                    "the recycling entry changed since review",
+                ));
+            }
+            if entry.stamp.kind.is_dir() {
+                let expected: Vec<_> = entry
+                    .children
+                    .iter()
+                    .map(|child| {
+                        child
+                            .file_name()
+                            .expect("reviewed child name")
+                            .to_owned()
+                    })
+                    .collect();
+                let found: Vec<_> = children(&actual, REVIEW_ENTRY_LIMIT)?
+                    .into_iter()
+                    .map(|child| {
+                        child.file_name().expect("listed child name").to_owned()
+                    })
+                    .collect();
+                if expected != found {
+                    return Err(io::Error::other(
+                        "folder contents changed since recycling review",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Pin the complete reviewed selection until the caller's handoff.
+    pub(super) fn pin_for_recycling(
+        &self,
+        path: &Path,
+        cancel: &AtomicBool,
+    ) -> io::Result<Vec<File>> {
+        if self.entries.first().is_none_or(|entry| entry.path != path) {
+            return Err(io::Error::other("the reviewed path changed"));
+        }
+        let roots = known_sync_roots();
+        let mut opened = Vec::new();
+        for entry in &self.entries {
+            check_cancel(cancel)?;
+            let file = open_removal(&entry.path)?;
+            refuse_cloud(&entry.path, &file, &roots)?;
+            if Stamp::capture(&file)? != entry.stamp {
+                return Err(io::Error::other(
+                    "the recycling entry changed since review",
+                ));
+            }
+            opened.push(file);
+        }
+        self.matches_at(path)?;
+        Ok(opened)
     }
 }
 

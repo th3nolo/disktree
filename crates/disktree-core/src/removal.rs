@@ -1155,7 +1155,7 @@ pub enum TrashBackend {
     Gio,
     /// The XDG trash directory, implemented here.
     XdgHome,
-    /// Windows recycling, disabled until it can preserve marked identities.
+    /// Native Windows recycling with reviewed handoffs and checked receipts.
     RecycleBin,
     /// No way to move files to a trash on this machine.
     #[default]
@@ -1166,7 +1166,8 @@ impl TrashBackend {
     pub const fn is_available(self) -> bool {
         match self {
             Self::MacOs | Self::TrashPut | Self::Gio | Self::XdgHome => true,
-            Self::RecycleBin | Self::Unavailable => false,
+            Self::RecycleBin => cfg!(windows),
+            Self::Unavailable => false,
         }
     }
 
@@ -1176,7 +1177,7 @@ impl TrashBackend {
             Self::TrashPut => "trash-put",
             Self::Gio => "gio trash",
             Self::XdgHome => "XDG trash",
-            Self::RecycleBin => "Recycle Bin (disabled)",
+            Self::RecycleBin => "Windows Recycle Bin",
             Self::Unavailable => "no trash tool found",
         }
     }
@@ -1192,7 +1193,7 @@ impl TrashBackend {
                 "moves into ~/.local/share/Trash on the same volume"
             }
             Self::RecycleBin => {
-                "Recycling is disabled to protect against file replacement."
+                "uses the Windows Recycle Bin; failures never delete permanently"
             }
             Self::Unavailable => {
                 "install trash-cli or keep deleting permanently"
@@ -1201,8 +1202,7 @@ impl TrashBackend {
     }
 }
 
-/// Report Windows recycling as disabled instead of selecting a weaker
-/// path-based trash backend.
+/// Native Windows recycling is the normal recoverable removal mode.
 #[cfg(windows)]
 pub const fn detect_trash_backend() -> TrashBackend {
     TrashBackend::RecycleBin
@@ -1266,7 +1266,7 @@ pub enum RemovalEvent {
         bytes: u64,
         outcome: Result<(), String>,
     },
-    /// One Windows entry was actually deleted, including partial folders.
+    /// One Windows entry was deleted or included in a checked recycle receipt.
     EntryRemoved {
         path: PathBuf,
     },
@@ -1435,7 +1435,7 @@ fn run(
     plan: &Plan,
     mode: RemovalMode,
     backend: TrashBackend,
-    cancel: &AtomicBool,
+    cancel: &Arc<AtomicBool>,
     sender: &mpsc::Sender<RemovalEvent>,
 ) {
     let _ = sender.send(RemovalEvent::Start {
@@ -1511,11 +1511,16 @@ fn run(
         } else {
             failed += 1;
         }
+        let stop =
+            cfg!(windows) && mode == RemovalMode::Trash && outcome.is_err();
         let _ = sender.send(RemovalEvent::Item {
             path: target.path.clone(),
             bytes: target.bytes,
             outcome: outcome.map_err(|error| error.to_string()),
         });
+        if stop {
+            break;
+        }
     }
 
     // NTFS writes the file table's records lazily, and the elevated rescan
@@ -1543,7 +1548,7 @@ fn perform_removal(
     plan: &Plan,
     mode: RemovalMode,
     backend: TrashBackend,
-    _cancel: &AtomicBool,
+    _cancel: &Arc<AtomicBool>,
     _sender: &mpsc::Sender<RemovalEvent>,
 ) -> io::Result<()> {
     match mode {
@@ -1558,7 +1563,7 @@ fn perform_removal(
     plan: &Plan,
     mode: RemovalMode,
     backend: TrashBackend,
-    cancel: &AtomicBool,
+    cancel: &Arc<AtomicBool>,
     sender: &mpsc::Sender<RemovalEvent>,
 ) -> io::Result<()> {
     let saved = plan.root_snapshot.as_ref().ok_or_else(|| {
@@ -1572,41 +1577,48 @@ fn perform_removal(
     if !saved.matches(&plan.root) {
         return Err(io::Error::other("the scanned root changed"));
     }
+    let review = plan
+        .review
+        .as_ref()
+        .filter(|review| review.targets == plan.targets)
+        .ok_or_else(|| {
+            io::Error::other(
+                "the deletion list was not prepared for confirmation",
+            )
+        })?;
+    let index = plan
+        .targets
+        .iter()
+        .position(|item| item == target)
+        .ok_or_else(|| io::Error::other("unreviewed target"))?;
     match mode {
-        RemovalMode::Permanent => {
-            let review = plan
-                .review
-                .as_ref()
-                .filter(|review| review.targets == plan.targets)
-                .ok_or_else(|| {
-                    io::Error::other(
-                        "the deletion list was not prepared for confirmation",
-                    )
-                })?;
-            let index = plan
-                .targets
-                .iter()
-                .position(|item| item == target)
-                .ok_or_else(|| io::Error::other("unreviewed target"))?;
-            crate::windows::remove_reviewed(
-                &guard.path,
+        RemovalMode::Permanent => crate::windows::remove_reviewed(
+            &guard.path,
+            &review.trees[index],
+            cancel,
+            |path| {
+                let _ = sender.send(RemovalEvent::EntryRemoved {
+                    path: path.to_path_buf(),
+                });
+            },
+        ),
+        RemovalMode::Trash if backend == TrashBackend::RecycleBin => {
+            crate::windows::recycle_reviewed(
+                guard,
                 &review.trees[index],
                 cancel,
-                |path| {
-                    let _ = sender.send(RemovalEvent::EntryRemoved {
-                        path: path.to_path_buf(),
-                    });
-                },
-            )
-        }
-        RemovalMode::Trash => {
-            if target.identity.is_some()
-                && entry_identity(&guard.path) != target.identity
-            {
-                return Err(io::Error::other("the marked entry changed"));
+            )?;
+            for path in crate::windows::recycled_paths(&review.trees[index]) {
+                let _ = sender.send(RemovalEvent::EntryRemoved {
+                    path: path.to_path_buf(),
+                });
             }
-            move_to_trash(&guard.path, backend)
+            Ok(())
         }
+        RemovalMode::Trash => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "the Windows Recycle Bin backend is required; no deletion attempted",
+        )),
     }
 }
 
@@ -1894,8 +1906,8 @@ const fn is_dir_link(_meta: &fs::Metadata) -> bool {
 
 /// Move one path to the desktop trash.
 pub fn move_to_trash(path: &Path, backend: TrashBackend) -> io::Result<()> {
-    // Refuse every backend on Windows, including direct callers that choose
-    // a Unix backend. No path-based tool or permanent fallback is safe here.
+    // A bare Windows path has no approved identity or frozen review. The
+    // worker uses recycle_reviewed instead, never a Unix tool or fallback.
     if cfg!(windows) {
         return recycle(path);
     }
@@ -1944,13 +1956,11 @@ fn trash_via_macos(_path: &Path) -> io::Result<()> {
     Err(io::Error::other("the macOS Trash only exists on macOS"))
 }
 
-/// A last identity check cannot bind the shell's later path lookup. Keeping
-/// a no-delete-share handle instead also prevents the shell from recycling.
-/// Refuse the operation until a recoverable identity-bound move is available.
+/// Windows callers must supply the reviewed plan through the removal worker.
 fn recycle(_path: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        TrashBackend::RecycleBin.detail(),
+        "Windows recycling requires a reviewed plan; no deletion was attempted",
     ))
 }
 
@@ -2206,7 +2216,7 @@ mod tests {
             &plan,
             RemovalMode::Permanent,
             TrashBackend::Unavailable,
-            &AtomicBool::new(false),
+            &Arc::new(AtomicBool::new(false)),
             &sender,
         );
         drop(sender);
@@ -2885,7 +2895,7 @@ mod tests {
             plan,
             mode,
             TrashBackend::Unavailable,
-            &AtomicBool::new(false),
+            &Arc::new(AtomicBool::new(false)),
             &sender,
         );
         drop(sender);
@@ -3019,7 +3029,7 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
-    fn disabled_recycling_reports_failure_without_permanent_fallback() {
+    fn unreviewed_recycling_reports_failure_without_permanent_fallback() {
         let temp = tree();
         let path = temp.path().join("a/one.bin");
         let planned = plan(&[target(&path, 10)], temp.path());
@@ -3028,7 +3038,7 @@ mod tests {
             &planned,
             RemovalMode::Trash,
             TrashBackend::RecycleBin,
-            &AtomicBool::new(false),
+            &Arc::new(AtomicBool::new(false)),
             &sender,
         );
         drop(sender);
@@ -3044,8 +3054,8 @@ mod tests {
             .collect();
 
         assert_eq!(outcomes.len(), 1);
-        let error = outcomes[0].as_ref().expect_err("recycling disabled");
-        assert!(error.contains("Recycling is disabled"), "{error}");
+        let error = outcomes[0].as_ref().expect_err("review missing");
+        assert!(error.contains("not prepared for confirmation"), "{error}");
         assert_eq!(fs::read(&path).expect("read marked"), vec![b'x'; 10]);
         assert!(temp.path().join("a/c.bin").exists());
     }
@@ -3372,10 +3382,10 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_reports_recycling_as_disabled() {
+    fn windows_reports_the_native_recycle_backend_as_available() {
         let backend = detect_trash_backend();
         assert_eq!(backend, TrashBackend::RecycleBin);
-        assert!(!backend.is_available());
+        assert!(backend.is_available());
     }
 
     #[cfg(windows)]

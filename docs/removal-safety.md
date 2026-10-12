@@ -46,22 +46,45 @@ root retargeting, replaced entries, missing marks, lossy names, parent locks,
 links, and read-only files. Validation uses the repository's unchanged
 `cargo xtask lint` and `cargo xtask test` gates on Windows, Linux and macOS.
 
-Windows recycling is disabled in this fork. A final identity check cannot
-bind the shell's later lookup to the marked object. Every Windows trash
-backend now returns an unsupported-operation error, including direct calls;
-there is no shell handoff or permanent-deletion fallback. The review starts
-with removal blocked until the user explicitly chooses permanent deletion,
-which still requires confirmation. A recoverable identity-bound replacement
-would need a separate recovery design before recycling can return.
+Windows recycling is the default, through `windows_trash.rs` and the native
+`ITransferSource::RecycleItem` interface. Both Windows modes use the reviewed
+plan and a confirmation dialog. The backend calls only the provider's explicit
+recycling method; it never asks the general `IFileOperation::DeleteItem` engine
+to remove an item. A real oversized sparse-file test reproduced permanent
+deletion with that general engine despite recycling flags. The direct method
+returns the quota error with the original object intact. Failure advice refuses
+retries, overwrite and encryption loss. An error stops pending targets and never
+calls `RemoveItem` or the permanent worker. Bare `move_to_trash(path, ...)`
+calls on Windows
+remain unsupported because they do not carry an approved identity and plan.
 
-Windows permanent confirmation now prepares an exact, bounded descendant
+The worker pins the ancestry and checks all reviewed entries before handoff.
+Immediately before the provider call it repeats metadata, cloud and membership
+checks, then releases
+entry pins so Windows can move them. The returned recycle receipt must match
+the reviewed full file IDs, kinds, file lengths, modification times and exact
+relative membership. A replaced item or late child can therefore be moved
+temporarily by Windows, then detected and returned. The return releases this
+operation's parent pins, refuses a changed parent and occupied original name,
+and uses the provider's `MoveItem` with `TSF_FAIL_EXIST` and refused overwrite
+advice to preserve a late occupant. Failed restoration reports recovery from
+the Recycle Bin or original parent.
+
+This is compensation after a native move, not an atomic identity-bound shell
+handoff. A crash, external mutation or restore failure can leave an unexpected
+item in the Recycle Bin; cancellation does not undo completed moves. The
+permanent worker's handle-binding guarantee and the Lean filesystem model
+do not prove this native recycling path. Recycling does not immediately free
+space; the application shows zero projected reclamation for that mode.
+
+Windows confirmation prepares an exact, bounded descendant
 list in the background. It records identity, kind and directory membership;
 file length and modification time are also checked. The final dialog uses
 that saved plan, shows its entry count and first full selection path, and
-requires a Delete click or a fresh Ctrl+Enter. Plain Enter and held keys
+requires a Recycle/Delete click or a fresh Ctrl+Enter. Plain Enter and held keys
 cannot approve deletion. Changed marks require another review.
 
-Before removing a Windows target, the worker opens every reviewed entry
+Before permanently removing a Windows target, the worker opens every reviewed entry
 without following links, retains all handles without sharing writes or
 deletion, and compares metadata and membership again. A child that is
 already locked, replaced or newly added therefore refuses that target
@@ -81,6 +104,16 @@ rather than leaving the UI running forever. A process crash is not rollback.
 Multiple selected hardlinks to the same object can conflict with the
 preflight's own no-delete-sharing handles; refusal requires splitting that
 selection, rather than weakening the sharing contract.
+
+Native recycle regression tests use owned temporary trees and the real
+Windows bin. They check restore bytes, names and file identities, an 80-file
+batch cancelled after five completed moves, quota failure without deletion,
+changed files, replacement after the final check, a late child and a
+restore collision. Each successful scenario writes a JSON record when
+`DISKTREE_RECYCLE_EVIDENCE_DIR` is set; CI retains x64 and ARM64 evidence.
+Successful test moves are restored by their exact receipts; tests never
+empty the user's bin or restore unrelated items. These filesystem tests do
+not establish native desktop rendering, every Windows version or provider.
 
 Registered Windows Cloud Files sync roots, known OneDrive environment roots,
 online-only attributes and unsupported non-link reparse providers are

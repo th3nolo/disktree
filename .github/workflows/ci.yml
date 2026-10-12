@@ -81,6 +81,7 @@ jobs:
     env:
       # Match the portable release's C runtime linkage for this candidate.
       RUSTFLAGS: -C target-feature=+crt-static -C control-flow-guard=yes
+      DISKTREE_RECYCLE_EVIDENCE_DIR: dist/windows-recycle-regression
     steps:
       # Check out with the repository's own line endings, as on Linux.
       - run: git config --global core.autocrlf false
@@ -118,6 +119,15 @@ jobs:
 
       - name: Test
         run: cargo xtask test
+
+      - name: Upload native recycling regression evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-recycle-regression
+          path: dist/windows-recycle-regression/
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Check embedded executable icon
         shell: pwsh
@@ -175,6 +185,7 @@ jobs:
     name: Test (${{ matrix.name }})
     env:
       RUSTFLAGS: ${{ startsWith(matrix.runner, 'windows-') && '-C target-feature=+crt-static -C control-flow-guard=yes' || '' }}
+      DISKTREE_RECYCLE_EVIDENCE_DIR: dist/windows-recycle-regression
     strategy:
       fail-fast: false
       matrix:
@@ -206,3 +217,12 @@ jobs:
 
       - name: Test
         run: cargo xtask test
+
+      - name: Upload native recycling regression evidence
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-arm64-recycle-regression
+          path: dist/windows-recycle-regression/
+          if-no-files-found: error
+          retention-days: 14
