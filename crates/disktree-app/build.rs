@@ -12,8 +12,49 @@ fn main() {
 
     // rc.exe treats backslashes inside quoted paths as separators, not escapes.
     let icon_path = icon.to_string_lossy().replace('\\', "/");
-    fs::write(&rc, format!("1 ICON \"{icon_path}\"\n"))
-        .expect("could not write Windows icon resource script");
+    let version = env::var("CARGO_PKG_VERSION").unwrap();
+    let repository = env::var("CARGO_PKG_REPOSITORY").unwrap();
+    let version_parts = [
+        "CARGO_PKG_VERSION_MAJOR",
+        "CARGO_PKG_VERSION_MINOR",
+        "CARGO_PKG_VERSION_PATCH",
+    ]
+    .map(|part| env::var(part).unwrap())
+    .join(",");
+    // Explorer needs a VERSIONINFO resource; changing Cargo's version alone
+    // leaves the downloaded executable's Details tab without an identity.
+    let resources = format!(
+        r#"1 ICON "{icon_path}"
+1 VERSIONINFO
+FILEVERSION {version_parts},0
+PRODUCTVERSION {version_parts},0
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS 0x40004L
+FILETYPE 0x1L
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "DiskTree personal fork\0"
+            VALUE "FileVersion", "{version}\0"
+            VALUE "ProductName", "DiskTree\0"
+            VALUE "ProductVersion", "{version}\0"
+            VALUE "OriginalFilename", "disktree.exe\0"
+            VALUE "Comments", "{repository}\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
+"#,
+    );
+    fs::write(&rc, resources)
+        .expect("could not write Windows icon and version resource script");
 
     // Cargo can run outside a Visual Studio prompt, where the SDK bin is not
     // on PATH even though the MSVC linker and Windows SDK are installed.
@@ -58,6 +99,8 @@ fn main() {
     );
 
     println!("cargo:rerun-if-changed={}", icon.display());
+    println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION");
+    println!("cargo:rerun-if-env-changed=CARGO_PKG_REPOSITORY");
     println!("cargo:rustc-link-arg-bin=disktree={}", res.display());
 }
 

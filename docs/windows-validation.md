@@ -68,6 +68,14 @@ are used:
 - `windows-candidate`: a ZIP and its SHA-256 sidecar. This exists only
   after the lint, tests, executable scan, startup check, and ZIP scan pass.
 
+Candidates identify their source in the name:
+`disktree-<repository-owner>-<version>-candidate-<commit>-windows.zip`.
+The version comes from the workspace, not a renamed older executable.
+`disktree --version`, the window title and Windows file properties also show
+the version. CI refuses a candidate whose file or product version differs
+from the workspace, whose file comments name a different source repository,
+or whose `--version` output differs from those build records.
+
 Artifacts are retained for 14 days. A missing scan engine, inactive
 antivirus, failed signature update, signatures older than 48 hours,
 nonzero scan exit, or changed executable fails validation. No executable
@@ -80,6 +88,11 @@ C runtime flag, lockfile hash, script hash, executable hash, and
 Authenticode status. PR CI normally checks out GitHub's test merge commit;
 the separate PR head field identifies the branch under review. These are
 unsigned build records, not a cryptographic artifact attestation.
+
+The records include the workspace version, source repository and observed
+Windows file metadata. `version-stdout.txt` records the separate startup
+check with `--version`; its exit code must be zero and its output must match
+the workspace version and repository exactly.
 
 The smoke check executes only `disktree.exe --help`, after its scan,
 and requires both a zero exit and the expected help text. The repository's

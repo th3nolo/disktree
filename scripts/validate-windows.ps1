@@ -57,12 +57,16 @@ $report = [ordered]@{
     started_utc = [DateTime]::UtcNow.ToString('o')
     finished_utc = $null
     source_commit = $null
+    workspace_version = $null
+    project_repository = $null
+    executable_version = $null
     executable_sha256 = $null
     archive_sha256 = $null
     defender = $null
     executable_scan_exit_code = $null
     archive_scan_exit_code = $null
     help_exit_code = $null
+    version_exit_code = $null
     imports = 'unavailable'
     pe_mitigations = $null
     error = $null
@@ -95,12 +99,48 @@ try {
         Join-Path $evidence 'cargo.txt'
     )
     Invoke-LoggedNative cargo @(
+        'metadata', '--locked', '--offline', '--no-deps',
+        '--format-version', '1'
+    ) (Join-Path $evidence 'workspace-metadata.json')
+    $metadata = Get-Content -LiteralPath (
+        Join-Path $evidence 'workspace-metadata.json'
+    ) -Raw | ConvertFrom-Json
+    $appMetadata = @($metadata.packages | Where-Object {
+        $_.name -eq 'disktree-app'
+    })
+    if ($appMetadata.Count -ne 1 -or -not $appMetadata[0].repository) {
+        throw 'Cannot identify the application version and repository.'
+    }
+    $version = $appMetadata[0].version
+    $repository = $appMetadata[0].repository
+    $repositoryUri = [Uri] $repository
+    $repositoryOwner = $repositoryUri.Segments[-2].Trim('/')
+    if ($repositoryOwner -notmatch '^[A-Za-z0-9-]+$') {
+        throw 'The repository owner cannot identify a candidate archive.'
+    }
+    $fileVersion = (Get-Item -LiteralPath $exe).VersionInfo
+    $report.workspace_version = $version
+    $report.project_repository = $repository
+    $report.executable_version = [ordered]@{
+        file_version = $fileVersion.FileVersion
+        product_version = $fileVersion.ProductVersion
+        comments = $fileVersion.Comments
+    }
+    if ($fileVersion.FileVersion -ne $version -or
+        $fileVersion.ProductVersion -ne $version -or
+        $fileVersion.Comments -ne $repository) {
+        throw 'Windows executable metadata differs from the workspace.'
+    }
+    Invoke-LoggedNative cargo @(
         'tree', '--locked', '--workspace', '--all-features'
     ) (Join-Path $evidence 'dependencies.txt')
     $signature = Get-AuthenticodeSignature -LiteralPath $exe
     $provenance = [ordered]@{
         schema_version = 1
         repository = $env:GITHUB_REPOSITORY
+        workspace_version = $version
+        project_repository = $repository
+        executable_version = $report.executable_version
         source_commit = $commit
         pull_request_head_commit = $env:PR_HEAD_SHA
         workflow_revision = $env:WORKFLOW_REVISION
@@ -232,6 +272,25 @@ try {
         throw 'The executable did not return its expected help text.'
     }
 
+    # The binary must identify the same source as its metadata and archive.
+    $versionStdout = Join-Path $evidence 'version-stdout.txt'
+    $start.ArgumentList = '--version'
+    $start.RedirectStandardOutput = $versionStdout
+    $start.RedirectStandardError = Join-Path $evidence 'version-stderr.txt'
+    $process = Start-Process @start
+    if (-not $process.WaitForExit(30000)) {
+        $process.Kill()
+        $process.WaitForExit()
+        throw 'The executable version smoke check timed out.'
+    }
+    $process.WaitForExit()
+    $report.version_exit_code = $process.ExitCode
+    if ($process.ExitCode -ne 0 -or (
+        Get-Content -LiteralPath $versionStdout -Raw
+    ).Trim() -cne "disktree $version ($repository)") {
+        throw 'The executable version differs from its build records.'
+    }
+
     foreach ($name in @('README.md', 'LICENSE')) {
         $source = Join-Path $workRoot $name
         Copy-Item -LiteralPath $source -Destination $payload
@@ -246,7 +305,8 @@ try {
         Join-Path $payload 'disktree.exe.sha256'
     ) -Encoding utf8NoBOM
     $archive = Join-Path $output (
-        'disktree-candidate-' + $commit.Substring(0, 12) + '-windows.zip'
+        "disktree-$repositoryOwner-$version-candidate-" +
+        $commit.Substring(0, 12) + '-windows.zip'
     )
     $archiveInputs = Join-Path $payload '*'
     Compress-Archive -Path $archiveInputs -DestinationPath $archive
@@ -284,9 +344,12 @@ try {
             "| --- | --- |"
             "| Validation | $($report.result) |"
             "| Source | $($report.source_commit) |"
+            "| Version | $($report.workspace_version) |"
+            "| Project | $($report.project_repository) |"
             "| EXE scan exit | $($report.executable_scan_exit_code) |"
             "| ZIP scan exit | $($report.archive_scan_exit_code) |"
             "| Help exit | $($report.help_exit_code) |"
+            "| Version exit | $($report.version_exit_code) |"
             ''
             'This is a scan result, not a malware-free certification.'
             'Desktop GPU, Explorer, and Windows 10 checks remain manual.'
