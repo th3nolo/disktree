@@ -24,6 +24,12 @@ use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::os::windows::io::AsRawHandle as _;
 use std::path::{Component, Path, PathBuf, Prefix};
 
+#[path = "windows_removal.rs"]
+mod removal;
+pub use removal::{
+    REVIEW_ENTRY_LIMIT, ReviewedTree, remove_reviewed, review_tree,
+};
+
 use windows_sys::Win32::Foundation::{
     ERROR_INVALID_FUNCTION, ERROR_INVALID_LEVEL, ERROR_INVALID_PARAMETER,
     ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED, INVALID_HANDLE_VALUE, MAX_PATH,
@@ -593,16 +599,20 @@ pub fn remove_guarded(
     expected: Option<crate::removal::EntryIdentity>,
     expected_directory: Option<bool>,
 ) -> io::Result<()> {
-    let file = open_removal(path)?;
-    let identity = handle_identity(&file)?;
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let review = review_tree(path, &cancel, REVIEW_ENTRY_LIMIT)?;
+    let identity = review
+        .identity()
+        .ok_or_else(|| io::Error::other("the entry cannot be verified"))?;
     if expected.is_some_and(|expected| identity != expected) {
         return Err(io::Error::other("the marked entry changed"));
     }
-    let kind = crate::removal::entry_kind(&file.metadata()?);
-    if expected_directory.is_some_and(|expected| kind.is_dir() != expected) {
+    if expected_directory
+        .is_some_and(|expected| review.is_directory() != expected)
+    {
         return Err(io::Error::other("the marked entry kind changed"));
     }
-    remove_opened(path, &file, identity.0)
+    remove_reviewed(path, &review, &cancel, |_| {})
 }
 
 fn open_removal(path: &Path) -> io::Result<File> {
@@ -614,26 +624,13 @@ fn open_removal(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
-fn remove_opened(path: &Path, file: &File, volume: u64) -> io::Result<()> {
+fn delete_opened(file: &File) -> io::Result<()> {
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_DISPOSITION_FLAG_DELETE,
         FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
         FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO_EX,
         FileDispositionInfoEx, SetFileInformationByHandle,
     };
-    let meta = file.metadata()?;
-    if meta.is_dir()
-        && meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
-    {
-        if handle_identity(file)?.0 != volume {
-            return Err(io::Error::other("a different volume was not removed"));
-        }
-        for entry in fs::read_dir(path)? {
-            let child = entry?.path();
-            let opened = open_removal(&child)?;
-            remove_opened(&child, &opened, volume)?;
-        }
-    }
     let info = FILE_DISPOSITION_INFO_EX {
         Flags: FILE_DISPOSITION_FLAG_DELETE
             | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS

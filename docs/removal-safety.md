@@ -48,13 +48,54 @@ with removal blocked until the user explicitly chooses permanent deletion,
 which still requires confirmation. A recoverable identity-bound replacement
 would need a separate recovery design before recycling can return.
 
+Windows permanent confirmation now prepares an exact, bounded descendant
+list in the background. It records identity, kind and directory membership;
+file length and modification time are also checked. The final dialog uses
+that saved plan, shows its entry count and first full selection path, and
+requires a Delete click or a fresh Ctrl+Enter. Plain Enter and held keys
+cannot approve deletion. Changed marks require another review.
+
+Before removing a Windows target, the worker opens every reviewed entry
+without following links, retains all handles without sharing writes or
+deletion, and compares metadata and membership again. A child that is
+already locked, replaced or newly added therefore refuses that target
+before any of its siblings is deleted. Deletion uses only those handles,
+in child-before-parent order. A later addition is never enrolled in the
+operation; it can make the final directory deletion fail instead.
+
+The review is capped at 20,000 entries per plan, including files, folders
+and links. Larger selections must be split; there is no weaker recursive
+fallback. Cancellation is checked during preparation, preflight and before
+each Windows deletion. It cannot interrupt a Win32 call already in flight.
+Actual deleted entries are counted separately from completed top-level
+targets. Partial errors say how many entries were already deleted. Failed
+and unattempted marks survive completion if their objects still exist.
+Worker startup failure or a disconnected worker channel ends with an error,
+rather than leaving the UI running forever. A process crash is not rollback.
+Multiple selected hardlinks to the same object can conflict with the
+preflight's own no-delete-sharing handles; refusal requires splitting that
+selection, rather than weakening the sharing contract.
+
+Registered Windows Cloud Files sync roots, known OneDrive environment roots,
+online-only attributes and unsupported non-link reparse providers are
+refused during preparation and checked again during removal. Detection asks
+canonical ancestors too: an ordinary hydrated child can be non-cloud while
+its parent is a registered sync root. An unexpected
+cloud-status query error also refuses deletion. Native regression fixtures
+register only owned temporary roots and unregister them afterwards. They
+exercise fully local files and registration after review; they do not use a
+real cloud account or establish end-to-end OneDrive/Dropbox behavior.
+
 Limits: entry identity is captured when marking, not for every scanned node.
-A same-kind replacement made before marking can therefore be marked as the
-current occupant; the type guard does not prove scan-time object identity.
-A filesystem identity binds an object, not its contents. Another
-process can change files inside a marked directory before deletion. The
-Linux and macOS trash backends are unchanged; no claim is made that
-concurrent hostile mutation is fully isolated on every supported platform.
+A same-kind replacement before marking can still be marked as the current
+occupant; the type guard does not prove scan-time identity. Review metadata
+is not a content hash or a filesystem snapshot. File contents changed while
+preserving identity, length and modification time are not distinguished.
+Changes, cancellation, filesystem errors or process exit after deletion
+starts can leave a partial result, without rollback. Unregistered legacy
+sync providers outside known OneDrive roots are not universally detectable.
+The Linux and macOS deletion/trash backends are unchanged; their child-level
+cancellation and concurrent-mutation guarantees have not been extended.
 
 Antivirus reports for upstream release binaries remain unresolved by these
 source changes. No upstream executable was run on the user's PC. A clean
