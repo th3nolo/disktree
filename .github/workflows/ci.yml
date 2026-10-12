@@ -81,7 +81,7 @@ jobs:
     env:
       # Match the portable release's C runtime linkage for this candidate.
       RUSTFLAGS: -C target-feature=+crt-static -C control-flow-guard=yes
-      DISKTREE_RECYCLE_EVIDENCE_DIR: dist/windows-recycle-regression
+      DISKTREE_RECYCLE_EVIDENCE_DIR: ${{ github.workspace }}/dist/windows-recycle-regression
     steps:
       # Check out with the repository's own line endings, as on Linux.
       - run: git config --global core.autocrlf false
@@ -185,7 +185,7 @@ jobs:
     name: Test (${{ matrix.name }})
     env:
       RUSTFLAGS: ${{ startsWith(matrix.runner, 'windows-') && '-C target-feature=+crt-static -C control-flow-guard=yes' || '' }}
-      DISKTREE_RECYCLE_EVIDENCE_DIR: dist/windows-recycle-regression
+      DISKTREE_RECYCLE_EVIDENCE_DIR: ${{ github.workspace }}/dist/windows-recycle-regression
     strategy:
       fail-fast: false
       matrix:
