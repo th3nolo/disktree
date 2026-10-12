@@ -275,7 +275,7 @@ validation and failure classification. Sixteen of these tests exercise the
 real pinned compiler and are enabled in CI, including logically valid external
 definitions, separately applied attributes, programmatic environment attributes,
 and actual unrelated-typo/warning-only failures.
-Eighteen mutation checks first require a green baseline, then require the
+Twenty mutation checks first require a green baseline, then require the
 expected proof failure within a named theorem's declaration span when removing
 each preflight control, returning an empty run, bypassing identity checks, allowing
 duplicate/parent-first paths, deleting a required proof or weakening its type.
