@@ -257,7 +257,12 @@ impl Plan {
     }
 
     pub fn bytes(&self) -> u64 {
-        self.targets.iter().map(|target| target.bytes).sum()
+        // Estimates can come from saturated scan nodes or public callers.
+        // They must not panic the review screen or wrap into a smaller total.
+        self.targets
+            .iter()
+            .map(|target| target.bytes)
+            .fold(0, u64::saturating_add)
     }
 
     /// Bytes the targets free on the volume `root` is on: the only ones the
@@ -280,7 +285,8 @@ impl Plan {
     /// either, since a projection the meter cannot stand behind is worse
     /// than a smaller one.
     pub fn unattributed(&self) -> u64 {
-        self.bytes().saturating_sub(self.reclaim + self.foreign)
+        self.bytes()
+            .saturating_sub(self.reclaim.saturating_add(self.foreign))
     }
 
     pub const fn is_empty(&self) -> bool {
@@ -393,8 +399,12 @@ fn plan_against(targets: &[Target], root: &Path, mounts: &MountTable) -> Plan {
             &plan.root,
             &target.path,
         ) {
-            crate::space::Attribution::Scanned => plan.reclaim += bytes,
-            crate::space::Attribution::Other => plan.foreign += bytes,
+            crate::space::Attribution::Scanned => {
+                plan.reclaim = plan.reclaim.saturating_add(bytes);
+            }
+            crate::space::Attribution::Other => {
+                plan.foreign = plan.foreign.saturating_add(bytes);
+            }
             crate::space::Attribution::Unknown => {}
         }
     }
@@ -1495,7 +1505,9 @@ fn run(
         };
         if outcome.is_ok() {
             removed += 1;
-            bytes += target.bytes;
+            // An oversized estimate must not lose the terminal event after
+            // successful deletion. Actual free space is measured separately.
+            bytes = bytes.saturating_add(target.bytes);
         } else {
             failed += 1;
         }
@@ -2135,6 +2147,80 @@ mod tests {
         fs::write(temp.path().join("a/c.bin"), vec![b'x'; 20]).expect("write");
         fs::create_dir_all(temp.path().join("other")).expect("mkdir");
         temp
+    }
+
+    #[test]
+    fn overflowing_review_estimates_are_clamped() {
+        let temp = tree();
+        let root = temp.path();
+        let targets = vec![
+            target(&root.join("a/one.bin"), u64::MAX),
+            target(&root.join("a/c.bin"), 1),
+        ];
+        let plan = Plan {
+            targets,
+            reclaim: u64::MAX,
+            foreign: 1,
+            ..Plan::default()
+        };
+        assert_eq!(plan.bytes(), u64::MAX);
+        assert_eq!(plan.unattributed(), 0);
+    }
+
+    #[test]
+    fn overflowing_same_volume_projection_is_clamped() {
+        let temp = tree();
+        let root = temp.path();
+        let plan = plan_against(
+            &[
+                target(&root.join("a/one.bin"), u64::MAX),
+                target(&root.join("a/c.bin"), 1),
+            ],
+            root,
+            &MountTable::default(),
+        );
+        assert_eq!(plan.targets.len(), 2);
+        assert_eq!(plan.reclaim(), u64::MAX);
+        assert_eq!(plan.foreign(), 0);
+    }
+
+    #[test]
+    fn overflowing_worker_estimates_still_send_done_and_preserve_neighbours() {
+        let temp = tree();
+        let root = temp.path();
+        let keep = root.join("outside-selection.bin");
+        fs::write(&keep, b"unselected").expect("canary");
+        let plan = Plan {
+            root: root.to_path_buf(),
+            root_snapshot: RootSnapshot::capture(root),
+            targets: vec![
+                target(&root.join("a/one.bin"), u64::MAX),
+                target(&root.join("a/c.bin"), 1),
+            ],
+            ..Plan::default()
+        }
+        .prepare_review(&AtomicBool::new(false))
+        .expect("reviewed");
+        let (sender, receiver) = mpsc::channel();
+        run(
+            &plan,
+            RemovalMode::Permanent,
+            TrashBackend::Unavailable,
+            &AtomicBool::new(false),
+            &sender,
+        );
+        drop(sender);
+        assert!(matches!(
+            receiver.iter().last(),
+            Some(RemovalEvent::Done {
+                removed: 2,
+                bytes: u64::MAX,
+                failed: 0,
+            })
+        ));
+        assert!(!root.join("a/one.bin").exists());
+        assert!(!root.join("a/c.bin").exists());
+        assert_eq!(fs::read(keep).expect("canary survived"), b"unselected");
     }
 
     #[cfg(target_os = "linux")]

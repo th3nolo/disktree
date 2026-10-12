@@ -454,3 +454,201 @@ fn an_unprepared_plan_never_starts_permanent_windows_deletion() {
     assert_eq!(fs::read(file).expect("not deleted"), b"unapproved");
     fixture.assert_canaries();
 }
+
+#[test]
+fn shared_lean_cancellation_fixtures_match_native_windows_removal() {
+    // The same vectors run through Lean's approval/preflight executor. Here they
+    // drive real Win32 deletion with cancellation at each child boundary.
+    let cases = include_str!("../../../formal/lean/cancellation-cases.txt");
+    for line in cases.lines() {
+        let (cancel_after, expected) = line.split_once(':').expect("fixture");
+        let cancel_after = cancel_after.parse::<usize>().expect("index");
+        let expected = if expected.is_empty() {
+            Vec::new()
+        } else {
+            expected
+                .split(',')
+                .map(|index| index.parse::<usize>().expect("entry"))
+                .collect::<Vec<_>>()
+        };
+        let fixture = Fixture::new();
+        let directory = fixture.root.join("marked");
+        fs::create_dir(&directory).expect("directory");
+        let files = (0..3)
+            .map(|index| directory.join(format!("{index}.bin")))
+            .collect::<Vec<_>>();
+        for file in &files {
+            fs::write(file, b"reviewed").expect("file");
+        }
+        let cancel = AtomicBool::new(false);
+        let review = crate::windows::review_tree(
+            &directory,
+            &cancel,
+            crate::windows::REVIEW_ENTRY_LIMIT,
+        )
+        .expect("review");
+        cancel.store(cancel_after == 0, Ordering::Relaxed);
+        let mut removed = Vec::new();
+        let result = crate::windows::remove_reviewed(
+            &directory,
+            &review,
+            &cancel,
+            |path| {
+                let index = if path == directory {
+                    3
+                } else {
+                    files.iter().position(|file| file == path).expect("child")
+                };
+                removed.push(index);
+                if removed.len() == cancel_after {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            },
+        );
+        assert_eq!(removed, expected, "cancellation fixture {cancel_after}");
+        if cancel_after < 4 {
+            assert_eq!(
+                result.expect_err("cancelled").kind(),
+                io::ErrorKind::Interrupted
+            );
+        } else {
+            result.expect("completed");
+        }
+        for (index, file) in files.iter().enumerate() {
+            if expected.contains(&index) {
+                assert!(!file.exists());
+            } else {
+                assert_eq!(
+                    fs::read(file).expect("unremoved child"),
+                    b"reviewed"
+                );
+            }
+        }
+        assert_eq!(directory.exists(), !expected.contains(&3));
+        fixture.assert_canaries();
+    }
+}
+
+#[test]
+fn shared_lean_nested_fixtures_match_native_windows_removal() {
+    let cases = include_str!("../../../formal/lean/nested-cases.txt");
+    for line in cases.lines() {
+        let mut fields = line.split(':');
+        let kind = fields.next().expect("stop kind");
+        let stop_after = fields
+            .next()
+            .expect("stop count")
+            .parse::<usize>()
+            .expect("count");
+        let expected = fields
+            .next()
+            .expect("expected prefix")
+            .split(',')
+            .filter(|value| !value.is_empty())
+            .map(|value| value.parse::<usize>().expect("entry ID"))
+            .collect::<Vec<_>>();
+        assert!(fields.next().is_none());
+        let fixture = Fixture::new();
+        let directory = fixture.root.join("marked");
+        fs::create_dir_all(directory.join("a/deep")).expect("deep branch");
+        fs::create_dir(directory.join("b")).expect("second branch");
+        // IDs are shared with NestedFixtures.lean. Path comparison below
+        // also checks uniqueness and children before their ancestors.
+        let paths = [
+            (directory.join("a/0.bin"), false),
+            (directory.join("a/deep/1.bin"), false),
+            (directory.join("a/deep"), true),
+            (directory.join("a"), true),
+            (directory.join("b/2.bin"), false),
+            (directory.join("b"), true),
+            (directory.clone(), true),
+        ];
+        for (path, is_dir) in &paths {
+            if !is_dir {
+                fs::write(path, b"reviewed").expect("reviewed file");
+            }
+        }
+        let cancel = AtomicBool::new(false);
+        let review = crate::windows::review_tree(
+            &directory,
+            &cancel,
+            crate::windows::REVIEW_ENTRY_LIMIT,
+        )
+        .expect("nested review");
+        let late = match kind {
+            "cancel" => None,
+            "failure" => {
+                // Add an unapproved child after preflight, just before the
+                // corresponding parent removal. Never enroll the new file.
+                let parent = match stop_after {
+                    1 => 5,
+                    3 => 2,
+                    5 => 3,
+                    6 => 6,
+                    _ => panic!("unsupported failure boundary"),
+                };
+                Some(paths[parent].0.join("late.bin"))
+            }
+            _ => panic!("unknown stop kind"),
+        };
+        cancel.store(kind == "cancel" && stop_after == 0, Ordering::Relaxed);
+        let mut removed = Vec::new();
+        let result = crate::windows::remove_reviewed(
+            &directory,
+            &review,
+            &cancel,
+            |path| {
+                let index = paths
+                    .iter()
+                    .position(|(candidate, _)| candidate == path)
+                    .expect("reviewed entry only");
+                removed.push(index);
+                if removed.len() == stop_after {
+                    if let Some(late) = &late {
+                        fs::write(late, b"never approved").expect("late child");
+                    } else {
+                        cancel.store(true, Ordering::Relaxed);
+                    }
+                }
+            },
+        );
+        assert_eq!(removed, expected, "nested fixture {line}");
+        for (position, first) in removed.iter().enumerate() {
+            for later in &removed[position + 1..] {
+                assert_ne!(paths[*first].0, paths[*later].0);
+                assert!(!paths[*later].0.starts_with(&paths[*first].0));
+            }
+        }
+        if let Some(late) = &late {
+            let error = result.expect_err("nonempty parent refused");
+            assert!(error.to_string().contains(&format!(
+                "{} reviewed entries already deleted",
+                removed.len()
+            )));
+            assert_eq!(
+                fs::read(late).expect("unapproved child survives"),
+                b"never approved"
+            );
+        } else if stop_after < paths.len() {
+            assert_eq!(
+                result.expect_err("cancelled").kind(),
+                io::ErrorKind::Interrupted
+            );
+        } else {
+            result.expect("all entries removed");
+        }
+        for (index, (path, is_dir)) in paths.iter().enumerate() {
+            if expected.contains(&index) {
+                assert!(!path.exists());
+            } else if *is_dir {
+                assert!(path.is_dir());
+            } else {
+                assert_eq!(
+                    fs::read(path).expect("remaining selected file"),
+                    b"reviewed"
+                );
+            }
+        }
+        fixture.assert_canaries();
+    }
+}

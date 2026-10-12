@@ -3,6 +3,12 @@
 Base: `tobi/disktree` v0.11.0, commit
 `6c8d4ce6211bf135ff4e42890faebff1040e1846`.
 
+The [Rust and cleanup risk review](rust-removal-risk-review.md) records
+primary incident sources, reproduced byte-accounting overflow, and remaining
+verification work. The [Lean model](../formal/lean/README.md) checks abstract
+reviewed-removal rules and shares cancellation fixtures with native Windows
+tests. It does not prove the Rust executable or external Windows contracts.
+
 - Capture the canonical root and its filesystem identity before scanning.
   Review and the removal worker refuse a replaced or unverifiable root.
 - Capture the identity of each marked entry, without following a final link.

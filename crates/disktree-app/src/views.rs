@@ -2557,6 +2557,7 @@ fn review(
 
     let mut list = div()
         .id("marked-list")
+        .debug_selector(|| "marked-list".into())
         .flex()
         .flex_col()
         .flex_1()
@@ -2654,15 +2655,13 @@ fn mark_row(
     } else {
         theme.foreground
     };
-    div()
+    let row = div()
         .flex()
         .flex_row()
         .items_center()
         .gap(space::MD)
-        .px(space::MD)
-        .py(space::SM)
-        .border_b_1()
-        .border_color(theme.divider())
+        .min_w_0()
+        .w_full()
         .child(
             gpui_omarchy::icon(if item.is_dir {
                 gpui_omarchy::IconName::FolderOpen
@@ -2682,22 +2681,24 @@ fn mark_row(
                 .flex_1()
                 .child(
                     div()
+                        .id(ElementId::Name(
+                            format!("mark-name-{index}").into(),
+                        ))
+                        .debug_selector(move || format!("mark-name-{index}"))
                         .min_w_0()
                         .text_color(color)
                         .child(short_name(&item.path)),
                 )
                 .child(
                     div()
+                        .id(ElementId::Name(
+                            format!("mark-path-{index}").into(),
+                        ))
+                        .debug_selector(move || format!("mark-path-{index}"))
                         .text_size(text::CAPTION)
                         .text_color(theme.secondary)
                         .child(path_text),
                 ),
-        )
-        .children(covered.then(|| {
-            widgets::chip("Inside a marked directory", theme.secondary, cx)
-        }))
-        .children(
-            blocked.map(|reason| widgets::chip(reason, theme.warning, cx)),
         )
         .child(div().w(size::SHARE_LANE).flex_shrink_0().child(
             widgets::glyph_bar(
@@ -2729,7 +2730,27 @@ fn mark_row(
                 let path = item.path.clone();
                 move |this, _, _, cx| this.unmark(&path.clone(), cx)
             })),
-        )
+        );
+    // A long refusal must not take the name/path lane's horizontal space.
+    div()
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .min_w_0()
+        .gap(space::SM)
+        .px(space::MD)
+        .py(space::SM)
+        .border_b_1()
+        .border_color(theme.divider())
+        .child(row)
+        .children(covered.then(|| {
+            widgets::chip("Inside a marked directory", theme.secondary, cx)
+                .min_w_0()
+                .w_full()
+        }))
+        .children(blocked.map(|reason| {
+            widgets::chip(reason, theme.warning, cx).min_w_0().w_full()
+        }))
 }
 
 fn review_summary(
